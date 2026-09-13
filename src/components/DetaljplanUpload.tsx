@@ -7,9 +7,11 @@ const MAX_FILE_SIZE = 20 * 1024 * 1024;
 export function DetaljplanUpload({
   projectId,
   hasExistingUpload,
+  onUploaded,
 }: {
   projectId: string;
   hasExistingUpload: boolean;
+  onUploaded?: () => void;
 }) {
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,6 +53,7 @@ export function DetaljplanUpload({
 
       setUploaded(true);
       setCharacters(data.characters ?? null);
+      onUploaded?.();
     } catch {
       setError("Kunde inte nå servern. Försök igen.");
     } finally {

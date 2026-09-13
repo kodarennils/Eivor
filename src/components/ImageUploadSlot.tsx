@@ -12,11 +12,13 @@ export function ImageUploadSlot({
   projectId,
   direction,
   initialStoragePath,
+  onUploaded,
 }: {
   userId: string;
   projectId: string;
   direction: Direction;
   initialStoragePath?: string;
+  onUploaded?: () => void;
 }) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -78,6 +80,7 @@ export function ImageUploadSlot({
         .from(BUCKET)
         .createSignedUrl(path, 3600);
       if (signedUrlData?.signedUrl) setPreviewUrl(signedUrlData.signedUrl);
+      onUploaded?.();
     } finally {
       setIsUploading(false);
     }

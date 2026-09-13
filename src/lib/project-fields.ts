@@ -1,48 +1,8 @@
-// Placeholder set of fields for the structured form. Exact fields still
-// TBD (per the project brief) - stored as JSONB in project_answers.answers
-// so refining this list later doesn't require a schema migration.
+// Answers are collected conversationally (see lib/interview.ts) and stored
+// as JSONB in project_answers.answers, keyed by the field names below -
+// kept schema-less so refining the set of fields never needs a migration.
 
 export type Room = { type: string; percentage: string };
-
-export type ProjectAnswers = {
-  projectType: string;
-  description: string;
-  widthMeters: string;
-  depthMeters: string;
-  areaSqm: string;
-  heightMeters: string;
-  distanceToBoundaryMeters: string;
-  withinDetailedPlan: string;
-  propertyDesignation: string;
-  rooms: Room[];
-  windowsPerDirection: Record<Direction, string>;
-  mainEntranceDirection: string;
-};
-
-export const EMPTY_ANSWERS: ProjectAnswers = {
-  projectType: "",
-  description: "",
-  widthMeters: "",
-  depthMeters: "",
-  areaSqm: "",
-  heightMeters: "",
-  distanceToBoundaryMeters: "",
-  withinDetailedPlan: "",
-  propertyDesignation: "",
-  rooms: [],
-  windowsPerDirection: { norr: "", öster: "", söder: "", väster: "" },
-  mainEntranceDirection: "",
-};
-
-export const ROOM_TYPE_OPTIONS = [
-  "Kök",
-  "Vardagsrum",
-  "Sovrum",
-  "Badrum",
-  "Hall",
-  "Förråd",
-  "Annat",
-];
 
 export const PROJECT_TYPE_OPTIONS = [
   "Tillbyggnad",

@@ -38,10 +38,17 @@ Arbetssätt:
   under "REGELVERKSKONTEXT". Basera din bedömning på dessa utdrag i första
   hand, framför din egen allmänna kunskap. Om utdragen inte täcker fallet,
   säg det istället för att gissa.
-- När du hänvisar till en regel, ange källan och paragrafen/avsnittet rakt
-  i texten, t.ex. "(Plan- och bygglag 9 kap. 4 §)" eller
-  "(bfs-2024-4-aktsamhet)". Citera bara sådant som faktiskt finns i
-  REGELVERKSKONTEXT nedan.
+- Varje utdrag i REGELVERKSKONTEXT nedan inleds med en rad
+  "CITAT ATT ANVÄNDA: (...)" - det är den exakta källhänvisningen för det
+  utdraget. När du använder information från ett utdrag, skriv den texten
+  ordagrant inom parentes rakt i svaret, t.ex. "(Plan- och bygglag 9 kap. 4 §)"
+  eller "(Boverket, Bygglov för nybyggnad av komplementbyggnad)".
+- Använd ALDRIG generiska eller numrerade källhänvisningar som "[7]",
+  "källa 3" eller "enligt utdrag 2". Om du inte har en
+  "CITAT ATT ANVÄNDA"-rad att koppla ett påstående till: hoppa över
+  hänvisningen eller skriv om meningen utan att citera något - gissa
+  aldrig fram en paragraf eller ett sidnummer. Citera bara sådant som
+  faktiskt finns i REGELVERKSKONTEXT nedan.
 {{DETALJPLAN_INSTRUCTION}}
 - När du har tillräckligt underlag för en rimlig bedömning, ge ett tydligt
   svar i vardagligt, vänligt språk.

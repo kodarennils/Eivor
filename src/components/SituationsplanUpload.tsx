@@ -20,9 +20,11 @@ const STEP_INSTRUCTION: Record<Step, string> = {
 export function SituationsplanUpload({
   projectId,
   hasExisting,
+  onSaved,
 }: {
   projectId: string;
   hasExisting: boolean;
+  onSaved?: () => void;
 }) {
   const [step, setStep] = useState<Step>(hasExisting ? "ready" : "select");
   const [file, setFile] = useState<File | null>(null);
@@ -134,6 +136,7 @@ export function SituationsplanUpload({
         return;
       }
       setSaved(true);
+      onSaved?.();
     } catch {
       setError("Kunde inte nå servern. Försök igen.");
     } finally {

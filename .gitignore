@@ -40,6 +40,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# licensed test fonts (Klim Test Söhne) - kept local, not pushed
+/src/app/fonts/soehne/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

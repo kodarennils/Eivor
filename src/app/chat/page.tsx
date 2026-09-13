@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { parseAssistantMessage, type Verdict } from "@/lib/verdict";
+import { parseAssistantMessage, VERDICT_LABEL, VERDICT_STYLE } from "@/lib/verdict";
 import { savePendingAssessment } from "@/lib/pending-assessment";
 
 type Message = {
@@ -10,26 +10,16 @@ type Message = {
   content: string;
 };
 
-const VERDICT_LABEL: Record<Verdict, string> = {
-  kräver_bygglov: "Bygglov krävs troligen",
-  kräver_troligen_inte_bygglov: "Bygglov krävs troligen inte",
-  osäkert: "Går inte att avgöra ännu",
-};
-
-const VERDICT_STYLE: Record<Verdict, string> = {
-  kräver_bygglov: "bg-blue-50 text-blue-700 border-blue-200",
-  kräver_troligen_inte_bygglov: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  osäkert: "bg-amber-50 text-amber-700 border-amber-200",
-};
+const GREETING: Message[] = [
+  {
+    role: "assistant",
+    content:
+      "Hej! Jag är Eivor. Berätta kort vad du vill bygga eller ändra, så hjälper jag dig ta reda på om det troligen kräver bygglov.",
+  },
+];
 
 export default function ChatPage() {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: "assistant",
-      content:
-        "Hej! Jag är Eivor. Berätta kort vad du vill bygga eller ändra, så hjälper jag dig ta reda på om det troligen kräver bygglov.",
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>(GREETING);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,14 +51,7 @@ export default function ChatPage() {
     });
   }
 
-  async function sendMessage(e: React.FormEvent) {
-    e.preventDefault();
-    const trimmed = input.trim();
-    if (!trimmed || isLoading) return;
-
-    const nextMessages: Message[] = [...messages, { role: "user", content: trimmed }];
-    setMessages(nextMessages);
-    setInput("");
+  async function submitConversation(nextMessages: Message[]) {
     setError(null);
     setIsLoading(true);
 
@@ -91,6 +74,17 @@ export default function ChatPage() {
     } finally {
       setIsLoading(false);
     }
+  }
+
+  function sendMessage(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmed = input.trim();
+    if (!trimmed || isLoading) return;
+
+    const nextMessages: Message[] = [...messages, { role: "user", content: trimmed }];
+    setMessages(nextMessages);
+    setInput("");
+    submitConversation(nextMessages);
   }
 
   return (

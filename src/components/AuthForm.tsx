@@ -1,97 +1,86 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { GoogleIcon } from "@/components/icons";
 
-type Mode = "signup" | "login";
-
-export function AuthForm({ mode }: { mode: Mode }) {
+export function AuthForm() {
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [checkInbox, setCheckInbox] = useState(false);
-  const router = useRouter();
+  const [sent, setSent] = useState(false);
 
+  async function handleGoogleSignIn() {
+    setError(null);
+    setIsGoogleLoading(true);
+    const supabase = createClient();
+
+    // Full-page redirect to Google, then back to /auth/callback, which
+    // exchanges the code for a session and lands on /projekt - the same
+    // destination as a successful magic-link sign-in.
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: `${window.location.origin}/auth/callback` },
+    });
+    if (error) {
+      setError(translateAuthError(error.message));
+      setIsGoogleLoading(false);
+    }
+  }
+
+  // Passwordless: the same call signs an existing user in or creates a new
+  // account, so there's no separate "login" vs "signup" submit handler -
+  // Supabase's email OTP flow already treats both cases identically.
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setIsLoading(true);
     const supabase = createClient();
 
-    try {
-      if (mode === "signup") {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
-        });
-        if (error) {
-          setError(translateAuthError(error.message));
-          return;
-        }
-        if (data.session) {
-          router.push("/projekt");
-          router.refresh();
-        } else {
-          setCheckInbox(true);
-        }
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) {
-          setError(translateAuthError(error.message));
-          return;
-        }
-        router.push("/projekt");
-        router.refresh();
-      }
-    } finally {
-      setIsLoading(false);
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
+    });
+
+    setIsLoading(false);
+    if (error) {
+      setError(translateAuthError(error.message));
+      return;
     }
+    setSent(true);
   }
 
-  if (checkInbox) {
+  if (sent) {
     return (
       <div className="rounded-lg border border-border bg-muted px-4 py-3 text-sm">
-        Vi har skickat ett bekräftelsemail till <strong>{email}</strong>. Klicka
-        på länken i mailet för att aktivera kontot.
+        Vi har skickat en inloggningslänk till <strong>{email}</strong>. Klicka
+        på länken i mailet för att logga in.
       </div>
     );
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="email" className="text-sm font-medium">
-          E-post
-        </label>
+    <div className="flex flex-col gap-3">
+      <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <input
-          id="email"
           type="email"
           required
           autoComplete="email"
+          aria-label="E-postadress"
+          placeholder="E-postadress"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-accent"
+          className="h-11 rounded-lg border border-border bg-background px-4 text-sm outline-none focus:border-accent"
         />
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="password" className="text-sm font-medium">
-          Lösenord
-        </label>
-        <input
-          id="password"
-          type="password"
-          required
-          minLength={8}
-          autoComplete={mode === "signup" ? "new-password" : "current-password"}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none focus:border-accent"
-        />
-      </div>
+        <button
+          type="submit"
+          disabled={isLoading}
+          className="h-11 rounded-lg bg-accent text-sm font-medium text-accent-foreground disabled:opacity-40"
+        >
+          {isLoading ? "Skickar…" : "Fortsätt med e-post"}
+        </button>
+      </form>
 
       {error && (
         <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
@@ -99,26 +88,24 @@ export function AuthForm({ mode }: { mode: Mode }) {
         </p>
       )}
 
+      <div className="my-4 h-px bg-border" />
+
       <button
-        type="submit"
-        disabled={isLoading}
-        className="rounded-lg bg-accent px-5 py-2.5 text-sm font-medium text-accent-foreground disabled:opacity-40"
+        type="button"
+        onClick={handleGoogleSignIn}
+        disabled={isGoogleLoading}
+        className="flex h-11 items-center justify-center gap-2 rounded-lg border border-border bg-background text-sm font-medium hover:border-foreground/40 disabled:opacity-40"
       >
-        {isLoading ? "Ett ögonblick…" : mode === "signup" ? "Skapa konto" : "Logga in"}
+        <GoogleIcon className="h-4 w-4" />
+        {isGoogleLoading ? "Ett ögonblick…" : "Fortsätt med Google"}
       </button>
-    </form>
+    </div>
   );
 }
 
 function translateAuthError(message: string): string {
-  if (message.includes("already registered") || message.includes("already exists")) {
-    return "Det finns redan ett konto med den e-postadressen. Prova att logga in istället.";
-  }
-  if (message.includes("Invalid login credentials")) {
-    return "Fel e-postadress eller lösenord.";
-  }
-  if (message.includes("Password should be at least")) {
-    return "Lösenordet måste vara minst 8 tecken.";
+  if (message.toLowerCase().includes("rate limit")) {
+    return "För många försök. Vänta en stund och försök igen.";
   }
   return "Något gick fel. Försök igen.";
 }
