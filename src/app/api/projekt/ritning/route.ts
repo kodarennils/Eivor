@@ -6,6 +6,8 @@ import { generateSituationsplanSVG } from "@/lib/situationsplan-drawing";
 import { generateFloorPlanInteriorSVG } from "@/lib/floor-plan-drawing";
 import { analyzeFacadePhoto } from "@/lib/facade-analysis";
 import { DIRECTIONS, type Direction, type Room } from "@/lib/project-fields";
+import { parseSwedishNumber } from "@/lib/swedish-number";
+import { checkDrawingReadiness } from "@/lib/interview";
 
 const IMAGES_BUCKET = "project-images";
 const DOCUMENTS_BUCKET = "project-documents";
@@ -53,9 +55,9 @@ export async function POST(req: Request) {
     .maybeSingle();
 
   const answers = (answerRow?.answers ?? {}) as Record<string, unknown>;
-  const widthMeters = Number(answers.widthMeters);
-  const depthMeters = Number(answers.depthMeters);
-  const heightMeters = Number(answers.heightMeters);
+  const widthMeters = parseSwedishNumber(answers.widthMeters);
+  const depthMeters = parseSwedishNumber(answers.depthMeters);
+  const heightMeters = parseSwedishNumber(answers.heightMeters);
   const propertyDesignation = (answers.propertyDesignation as string) || undefined;
 
   const rooms = Array.isArray(answers.rooms) ? (answers.rooms as Room[]) : [];
@@ -66,28 +68,43 @@ export async function POST(req: Request) {
     ? (answers.mainEntranceDirection as Direction)
     : undefined;
 
-  if (!widthMeters || !depthMeters) {
+  // Shared with the interview's skip-ahead check (checkDrawingReadiness)
+  // so "is there enough to jump straight to drawings" and "will this
+  // request actually succeed" can never disagree with each other.
+  const readiness = checkDrawingReadiness(answers);
+  if (!readiness.ready) {
+    const missingDimensions = readiness.missing.some((m) => m === "bredd" || m === "djup");
     return Response.json(
-      { error: "Bredd och djup måste anges i formuläret innan en ritning kan genereras." },
-      { status: 422 },
-    );
-  }
-  if (!heightMeters) {
-    return Response.json(
-      { error: "Nockhöjd måste anges i formuläret innan fasadritningar och sektion kan genereras." },
+      {
+        error: missingDimensions
+          ? "Bredd och djup måste anges i formuläret innan en ritning kan genereras."
+          : "Nockhöjd måste anges i formuläret innan fasadritningar och sektion kan genereras.",
+      },
       { status: 422 },
     );
   }
 
   const { data: imageRows } = await supabase
     .from("project_images")
-    .select("direction, storage_path")
+    .select("direction, storage_path, material, color")
     .eq("project_id", projectId);
 
+  // Material/color is analyzed once, right after upload (see
+  // /api/projekt/facade-analys), and can be edited/confirmed from the
+  // document panel - both write to project_images. Re-running vision here
+  // on every "Generera ritningar" click would silently discard whatever
+  // the user confirmed or corrected, so this only falls back to a fresh
+  // analysis for a row that somehow never got one (e.g. the earlier
+  // analysis call failed).
   const facadeAttributes: Partial<Record<Direction, { material: string; color: string }>> = {};
 
   await Promise.all(
     (imageRows ?? []).map(async (row) => {
+      if (row.material && row.color) {
+        facadeAttributes[row.direction as Direction] = { material: row.material, color: row.color };
+        return;
+      }
+
       const { data: fileBlob, error: downloadError } = await supabase.storage
         .from(IMAGES_BUCKET)
         .download(row.storage_path);
@@ -98,10 +115,13 @@ export async function POST(req: Request) {
 
       const bytes = new Uint8Array(await fileBlob.arrayBuffer());
       try {
-        facadeAttributes[row.direction as Direction] = await analyzeFacadePhoto(
-          bytes,
-          row.storage_path,
-        );
+        const attributes = await analyzeFacadePhoto(bytes, row.storage_path);
+        facadeAttributes[row.direction as Direction] = attributes;
+        await supabase
+          .from("project_images")
+          .update({ material: attributes.material, color: attributes.color, attributes_confirmed: false })
+          .eq("project_id", projectId)
+          .eq("direction", row.direction);
       } catch (error) {
         console.error(`Fasadanalys misslyckades för ${row.direction}:`, error);
       }
@@ -136,10 +156,13 @@ export async function POST(req: Request) {
     widthMeters,
     depthMeters,
     rooms: rooms
-      .filter((room) => room.type && Number(room.percentage) > 0)
-      .map((room) => ({ type: room.type, fraction: Number(room.percentage) })),
+      .filter((room) => room.type && parseSwedishNumber(room.percentage) > 0)
+      .map((room) => ({ type: room.type, fraction: parseSwedishNumber(room.percentage) })),
     windowsPerDirection: Object.fromEntries(
-      DIRECTIONS.map((direction) => [direction, Number(windowsPerDirectionAnswers[direction]) || 0]),
+      DIRECTIONS.map((direction) => [
+        direction,
+        parseSwedishNumber(windowsPerDirectionAnswers[direction]) || 0,
+      ]),
     ) as Partial<Record<Direction, number>>,
     mainEntranceDirection,
     propertyDesignation,
@@ -162,7 +185,7 @@ export async function POST(req: Request) {
       const extension = projectRow.situationsplan_storage_path.split(".").pop()?.toLowerCase();
       const mimeType = MIME_BY_EXTENSION[extension ?? ""] ?? "image/jpeg";
       const base64 = Buffer.from(await mapBlob.arrayBuffer()).toString("base64");
-      const distanceToBoundaryMeters = Number(answers.distanceToBoundaryMeters);
+      const distanceToBoundaryMeters = parseSwedishNumber(answers.distanceToBoundaryMeters);
 
       situationsplan = generateSituationsplanSVG({
         mapImageDataUri: `data:${mimeType};base64,${base64}`,

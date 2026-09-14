@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import type { User } from "@supabase/supabase-js";
@@ -61,11 +61,21 @@ export default function ProjektPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [answers, setAnswers] = useState<Record<string, unknown>>({});
   const [photos, setPhotos] = useState<Partial<Record<Direction, string>>>({});
+  const [facadeAttributes, setFacadeAttributes] = useState<
+    Partial<Record<Direction, { material: string; color: string; confirmed: boolean }>>
+  >({});
   const [detaljplanUploaded, setDetaljplanUploaded] = useState(false);
   const [situationsplanUploaded, setSituationsplanUploaded] = useState(false);
   const [assessment, setAssessment] = useState<{ verdict?: Verdict; summary?: string } | null>(
     null,
   );
+  // buildAssessmentDescription() only reads a handful of fields (see
+  // below) - most interview turns (rooms, photos, kontrollansvarig,
+  // wrapup) touch none of them, so re-running /api/assess for those would
+  // send Claude an identical prompt and pay for a fresh classify call +
+  // embedding + full assessment for a result that can't have changed.
+  // Track what was last actually sent and skip the call when it repeats.
+  const lastAssessedDescriptionRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -73,7 +83,7 @@ export default function ProjektPage() {
     async function refreshPhotos(id: string) {
       const { data: imageRows } = await supabase
         .from("project_images")
-        .select("direction, storage_path")
+        .select("direction, storage_path, material, color, attributes_confirmed")
         .eq("project_id", id);
 
       const entries = await Promise.all(
@@ -87,6 +97,16 @@ export default function ProjektPage() {
       if (cancelled) return;
       setPhotos(
         Object.fromEntries(entries.filter(([, url]) => url)) as Partial<Record<Direction, string>>,
+      );
+      setFacadeAttributes(
+        Object.fromEntries(
+          (imageRows ?? [])
+            .filter((row) => row.material && row.color)
+            .map((row) => [
+              row.direction,
+              { material: row.material!, color: row.color!, confirmed: row.attributes_confirmed },
+            ]),
+        ) as Partial<Record<Direction, { material: string; color: string; confirmed: boolean }>>,
       );
     }
 
@@ -148,19 +168,20 @@ export default function ProjektPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  async function refreshAssessment(nextAnswers: Record<string, unknown>) {
+  async function refreshAssessment(
+    nextAnswers: Record<string, unknown>,
+    options?: { force?: boolean },
+  ) {
     if (!project) return;
+    const description = buildAssessmentDescription(project.initial_description, nextAnswers);
+    if (!options?.force && description === lastAssessedDescriptionRef.current) return;
+    lastAssessedDescriptionRef.current = description;
     try {
       const res = await fetch("/api/assess", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: [
-            {
-              role: "user",
-              content: buildAssessmentDescription(project.initial_description, nextAnswers),
-            },
-          ],
+          messages: [{ role: "user", content: description }],
           projectId: project.id,
         }),
       });
@@ -180,7 +201,7 @@ export default function ProjektPage() {
     if (!project) return;
     const { data: imageRow } = await supabase
       .from("project_images")
-      .select("storage_path")
+      .select("storage_path, material, color, attributes_confirmed")
       .eq("project_id", project.id)
       .eq("direction", direction)
       .maybeSingle();
@@ -191,6 +212,32 @@ export default function ProjektPage() {
     if (data?.signedUrl) {
       setPhotos((prev) => ({ ...prev, [direction]: data.signedUrl }));
     }
+    // ImageUploadSlot awaits /api/projekt/facade-analys before calling
+    // onUploaded (which leads here), so this should already reflect the
+    // fresh, unconfirmed analysis for the new photo.
+    setFacadeAttributes((prev) => ({
+      ...prev,
+      [direction]:
+        imageRow.material && imageRow.color
+          ? { material: imageRow.material, color: imageRow.color, confirmed: imageRow.attributes_confirmed }
+          : undefined,
+    }));
+  }
+
+  // Shared by both the chat (ProjectInterviewChat) and the document
+  // panel's editable fields (ProjectDocument) - a panel edit and a chat
+  // answer both end up here, since both are just different ways of
+  // producing the same project_answers update.
+  function handleAnswersChange(next: Record<string, unknown>) {
+    setAnswers(next);
+    refreshAssessment(next);
+  }
+
+  function handleFacadeAttributeChange(
+    direction: Direction,
+    attribute: { material: string; color: string; confirmed: boolean },
+  ) {
+    setFacadeAttributes((prev) => ({ ...prev, [direction]: attribute }));
   }
 
   async function handleSignOut() {
@@ -268,13 +315,23 @@ export default function ProjektPage() {
               userId={user.id}
               projectId={project.id}
               answers={answers}
-              onAnswersChange={(next) => {
-                setAnswers(next);
-                refreshAssessment(next);
-              }}
+              photos={photos}
+              facadeAttributes={facadeAttributes}
+              onAnswersChange={handleAnswersChange}
+              onFacadeAttributeChange={handleFacadeAttributeChange}
               onPhotoUploaded={refreshPhotoFor}
               onSituationsplanSaved={() => setSituationsplanUploaded(true)}
-              onDetaljplanUploaded={() => setDetaljplanUploaded(true)}
+              onDetaljplanUploaded={() => {
+                setDetaljplanUploaded(true);
+                // buildAssessmentDescription() never encodes "a detaljplan
+                // file was uploaded" - only the Ja/Nej/Vet-inte answer
+                // text, which is often already set by this point. /api/assess
+                // reads the uploaded detaljplan_text independently from the
+                // DB, so the throttle below would otherwise skip this call
+                // and the panel would never pick up a verdict change from
+                // the upload itself. Force it here.
+                refreshAssessment(answers, { force: true });
+              }}
             />
           </div>
         </section>
@@ -288,11 +345,15 @@ export default function ProjektPage() {
           </div>
           <article className="px-4 py-10 sm:px-10 sm:py-14">
             <ProjectDocument
+              projectId={project.id}
               answers={answers}
               photos={photos}
+              facadeAttributes={facadeAttributes}
               detaljplanUploaded={detaljplanUploaded}
               situationsplanUploaded={situationsplanUploaded}
               assessment={assessment}
+              onAnswersChange={handleAnswersChange}
+              onFacadeAttributeChange={handleFacadeAttributeChange}
             />
           </article>
         </section>

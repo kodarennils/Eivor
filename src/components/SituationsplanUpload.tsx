@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { parseSwedishNumber } from "@/lib/swedish-number";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 
@@ -102,7 +103,7 @@ export function SituationsplanUpload({
   }
 
   function confirmDistance() {
-    const meters = Number(knownDistance);
+    const meters = parseSwedishNumber(knownDistance);
     if (!calibPoint1 || !calibPoint2 || !meters || meters <= 0) {
       setError("Ange ett giltigt avstånd i meter.");
       return;

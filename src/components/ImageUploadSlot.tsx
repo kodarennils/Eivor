@@ -68,12 +68,37 @@ export function ImageUploadSlot({
       const { error: dbError } = await supabase
         .from("project_images")
         .upsert(
-          { project_id: projectId, direction, storage_path: path },
+          // Resetting material/color/attributes_confirmed here matters: a
+          // re-upload replacing an existing photo for this direction must
+          // not keep the previous photo's (possibly user-confirmed)
+          // material/color attached to the new image.
+          {
+            project_id: projectId,
+            direction,
+            storage_path: path,
+            material: null,
+            color: null,
+            attributes_confirmed: false,
+          },
           { onConflict: "project_id,direction" },
         );
       if (dbError) {
         setError("Bilden laddades upp men kunde inte sparas. Försök igen.");
         return;
+      }
+
+      // Awaited so the document panel's material/color fetch (triggered by
+      // onUploaded below) sees a completed analysis rather than a stale/
+      // empty row - a failure here is non-fatal, the panel just shows
+      // "analyserar..." until the user retries or edits it manually.
+      try {
+        await fetch("/api/projekt/facade-analys", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId, direction }),
+        });
+      } catch {
+        // Non-fatal - see comment above.
       }
 
       const { data: signedUrlData } = await supabase.storage

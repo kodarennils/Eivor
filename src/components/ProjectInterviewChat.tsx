@@ -6,7 +6,11 @@ import { ImageUploadSlot } from "@/components/ImageUploadSlot";
 import { SituationsplanUpload } from "@/components/SituationsplanUpload";
 import { DetaljplanUpload } from "@/components/DetaljplanUpload";
 import { DIRECTIONS, DIRECTION_LABEL, type Direction } from "@/lib/project-fields";
-import { describeChanges, type InterviewRequest } from "@/lib/interview";
+import { describeChanges, phaseProgress, type InterviewRequest } from "@/lib/interview";
+import { buildTekniskBeskrivning, type TekniskBeskrivning } from "@/lib/teknisk-beskrivning";
+import type { KontrollplanPunkt } from "@/app/api/projekt/kontrollplan/route";
+import { ReviewScreen } from "@/components/ReviewScreen";
+import type { FacadeAttribute } from "@/components/editable-answer-fields";
 
 type ApiMessage = { role: "user" | "assistant"; content: string };
 
@@ -16,6 +20,9 @@ type Drawings = {
   section: string;
   floorPlan: string;
   situationsplan: string | null;
+  kontrollplan: KontrollplanPunkt[];
+  kontrollplanError: string | null;
+  tekniskBeskrivning: TekniskBeskrivning;
 };
 
 const DETALJPLAN_ANSWER_TEXT: Record<"Ja" | "Nej" | "Vet inte", string> = {
@@ -23,18 +30,6 @@ const DETALJPLAN_ANSWER_TEXT: Record<"Ja" | "Nej" | "Vet inte", string> = {
   Nej: "Nej, den ligger utanför detaljplan.",
   "Vet inte": "Jag vet inte.",
 };
-
-// The "6" core facts the guide always needs, shown as a progress count in
-// the chat sub-header - rooms/fönster/foton are conditional on ärendetyp
-// so they're intentionally not counted here.
-const PROGRESS_FIELDS = [
-  "projectType",
-  "widthMeters",
-  "areaSqm",
-  "heightMeters",
-  "distanceToBoundaryMeters",
-  "withinDetailedPlan",
-] as const;
 
 type TimelineItem =
   | { kind: "message"; role: "user" | "assistant"; content: string }
@@ -49,7 +44,10 @@ export function ProjectInterviewChat({
   userId,
   projectId,
   answers = {},
+  photos = {},
+  facadeAttributes = {},
   onAnswersChange,
+  onFacadeAttributeChange,
   onPhotoUploaded: onPhotoUploadedProp,
   onSituationsplanSaved: onSituationsplanSavedProp,
   onDetaljplanUploaded: onDetaljplanUploadedProp,
@@ -57,7 +55,10 @@ export function ProjectInterviewChat({
   userId: string;
   projectId: string;
   answers: Record<string, unknown>;
+  photos?: Partial<Record<Direction, string>>;
+  facadeAttributes?: Partial<Record<Direction, FacadeAttribute>>;
   onAnswersChange?: (answers: Record<string, unknown>) => void;
+  onFacadeAttributeChange?: (direction: Direction, attribute: FacadeAttribute) => void;
   onPhotoUploaded?: (direction: Direction) => void;
   onSituationsplanSaved?: () => void;
   onDetaljplanUploaded?: () => void;
@@ -73,7 +74,10 @@ export function ProjectInterviewChat({
   const apiMessagesRef = useRef<ApiMessage[]>([]);
   const answersRef = useRef<Record<string, unknown>>({});
 
-  const completion = PROGRESS_FIELDS.filter((field) => answers[field]).length;
+  const uploadedPhotos = Object.fromEntries(
+    DIRECTIONS.map((d) => [d, Boolean(photos[d])]),
+  ) as Partial<Record<Direction, boolean>>;
+  const { completed: completion, total: progressTotal } = phaseProgress(answers, uploadedPhotos);
   // Only the most recent message keeps full color - everything earlier
   // reads as gray "history" so the active exchange stands out.
   const lastMessageIndex = timeline.reduce(
@@ -238,17 +242,35 @@ export function ProjectInterviewChat({
     setDrawingError(null);
 
     try {
-      const res = await fetch("/api/projekt/ritning", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId }),
-      });
-      const data = await res.json();
+      const [ritningRes, kontrollplanRes] = await Promise.all([
+        fetch("/api/projekt/ritning", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId }),
+        }),
+        fetch("/api/projekt/kontrollplan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId }),
+        }),
+      ]);
+      const data = await ritningRes.json();
 
-      if (!res.ok) {
+      if (!ritningRes.ok) {
         setDrawingError(data.error ?? "Något gick fel.");
         return;
       }
+
+      // The kontrollplan is a separate, RAG-grounded call that can fail
+      // independently (e.g. no relevant regelverk found) without blocking
+      // the drawings themselves - it just shows its own error inline.
+      const kontrollplanData = await kontrollplanRes.json();
+      const kontrollplan: KontrollplanPunkt[] = kontrollplanRes.ok
+        ? (kontrollplanData.punkter ?? [])
+        : [];
+      const kontrollplanError = kontrollplanRes.ok
+        ? null
+        : (kontrollplanData.error ?? "Kunde inte ta fram kontrollplan.");
 
       setTimeline((prev) => [
         ...prev,
@@ -260,6 +282,9 @@ export function ProjectInterviewChat({
             section: data.section,
             floorPlan: data.floorPlan,
             situationsplan: data.situationsplan ?? null,
+            kontrollplan,
+            kontrollplanError,
+            tekniskBeskrivning: buildTekniskBeskrivning(answers, data.facadeAttributes ?? {}),
           },
         },
       ]);
@@ -275,7 +300,7 @@ export function ProjectInterviewChat({
       <div className="flex shrink-0 items-center justify-between border-b border-border px-1 pb-3 text-sm">
         <span className="font-medium">Bygglovsguiden</span>
         <span className="text-xs text-foreground/50">
-          {completion} av {PROGRESS_FIELDS.length} uppgifter
+          {completion} av {progressTotal} uppgifter
         </span>
       </div>
 
@@ -288,8 +313,13 @@ export function ProjectInterviewChat({
               isLatestMessage={i === lastMessageIndex}
               userId={userId}
               projectId={projectId}
+              answers={answers}
+              photos={photos}
+              facadeAttributes={facadeAttributes}
               isGeneratingDrawings={isGeneratingDrawings}
               drawingError={drawingError}
+              onAnswersChange={onAnswersChange}
+              onFacadeAttributeChange={onFacadeAttributeChange}
               onPhotoUploaded={handlePhotoUploaded}
               onSituationsplanSaved={handleSituationsplanSaved}
               onSkipSituationsplan={handleSkipSituationsplan}
@@ -354,8 +384,13 @@ function TimelineEntry({
   isLatestMessage,
   userId,
   projectId,
+  answers,
+  photos,
+  facadeAttributes,
   isGeneratingDrawings,
   drawingError,
+  onAnswersChange,
+  onFacadeAttributeChange,
   onPhotoUploaded,
   onSituationsplanSaved,
   onSkipSituationsplan,
@@ -367,8 +402,13 @@ function TimelineEntry({
   isLatestMessage: boolean;
   userId: string;
   projectId: string;
+  answers: Record<string, unknown>;
+  photos: Partial<Record<Direction, string>>;
+  facadeAttributes: Partial<Record<Direction, FacadeAttribute>>;
   isGeneratingDrawings: boolean;
   drawingError: string | null;
+  onAnswersChange?: (answers: Record<string, unknown>) => void;
+  onFacadeAttributeChange?: (direction: Direction, attribute: FacadeAttribute) => void;
   onPhotoUploaded: (id: string, direction: Direction) => void;
   onSituationsplanSaved: (id: string) => void;
   onSkipSituationsplan: (id: string) => void;
@@ -500,21 +540,17 @@ function TimelineEntry({
 
   if (item.kind === "generate-cta") {
     return (
-      <div className="flex flex-col items-start gap-2">
-        <button
-          type="button"
-          onClick={onGenerateDrawings}
-          disabled={isGeneratingDrawings}
-          className="rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-accent-foreground disabled:opacity-40"
-        >
-          {isGeneratingDrawings ? "Genererar…" : "Generera ritningar"}
-        </button>
-        {drawingError && (
-          <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
-            {drawingError}
-          </p>
-        )}
-      </div>
+      <ReviewScreen
+        projectId={projectId}
+        answers={answers}
+        photos={photos}
+        facadeAttributes={facadeAttributes}
+        onAnswersChange={onAnswersChange ?? (() => {})}
+        onFacadeAttributeChange={onFacadeAttributeChange ?? (() => {})}
+        onGenerate={onGenerateDrawings}
+        isGenerating={isGeneratingDrawings}
+        error={drawingError}
+      />
     );
   }
 
@@ -535,6 +571,85 @@ function TimelineEntry({
       {item.drawings.situationsplan && (
         <DrawingCard title="Situationsplan" svg={item.drawings.situationsplan} />
       )}
+      <KontrollplanCard
+        punkter={item.drawings.kontrollplan}
+        error={item.drawings.kontrollplanError}
+      />
+      <TekniskBeskrivningCard data={item.drawings.tekniskBeskrivning} />
+    </div>
+  );
+}
+
+function KontrollplanCard({
+  punkter,
+  error,
+}: {
+  punkter: KontrollplanPunkt[];
+  error: string | null;
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-white p-4">
+      <p className="mb-3 text-xs font-medium tracking-wide text-foreground/50 uppercase">
+        Förslag till kontrollplan
+      </p>
+
+      {error ? (
+        <p className="text-sm text-red-700">{error}</p>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-border text-xs text-foreground/50">
+                  <th className="py-2 pr-3 font-medium">Kontrollpunkt</th>
+                  <th className="py-2 pr-3 font-medium">Utförs av</th>
+                  <th className="py-2 font-medium">När</th>
+                </tr>
+              </thead>
+              <tbody>
+                {punkter.map((p, i) => (
+                  <tr key={i} className="border-b border-border last:border-0">
+                    <td className="py-2 pr-3">{p.kontrollpunkt}</td>
+                    <td className="py-2 pr-3 text-foreground/70">{p.utforsAv}</td>
+                    <td className="py-2 text-foreground/70">{p.nar}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-4 rounded-xl bg-muted p-3 text-xs text-foreground/60">
+            Detta är ett förslag till kontrollplan baserat på ditt ärende. Det ska granskas
+            och fastställas tillsammans med din kontrollansvarig och/eller byggnadsnämnden.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function TekniskBeskrivningCard({ data }: { data: TekniskBeskrivning }) {
+  const rows: [string, string][] = [
+    ["Grundläggning", data.grundlaggning],
+    ["Stomme / fasadmaterial", data.stomme],
+    ["Ventilation", data.ventilation],
+    ["Uppvärmning", data.uppvarmning],
+  ];
+
+  return (
+    <div className="rounded-xl border border-border bg-white p-4">
+      <p className="mb-3 text-xs font-medium tracking-wide text-foreground/50 uppercase">
+        Teknisk beskrivning
+      </p>
+      <div className="divide-y divide-border text-sm">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex items-baseline justify-between gap-4 py-2">
+            <span className="text-foreground/60">{label}</span>
+            <span className={value === "Ej angivet" ? "text-foreground/40" : "font-medium"}>
+              {value}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
