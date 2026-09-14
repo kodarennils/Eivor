@@ -7,11 +7,39 @@ import type { User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
 import { ProjectInterviewChat } from "@/components/ProjectInterviewChat";
 import { ProjectDocument } from "@/components/ProjectDocument";
-import { BuildingIcon, CheckIcon } from "@/components/icons";
+import { DashboardSidebar } from "@/components/DashboardSidebar";
+import { BuildingIcon, CheckIcon, MenuIcon, CloseIcon } from "@/components/icons";
 import { parseAssistantMessage, type Verdict } from "@/lib/verdict";
 import type { Direction } from "@/lib/project-fields";
+import type { GeneratedDrawings } from "@/lib/generated-drawings";
+import type { DrawingModel } from "@/lib/drawing-schema";
+import { computeOverviewSectionsPresence, hasAnyOverviewContent } from "@/lib/overview-sections";
 
 const IMAGES_BUCKET = "project-images";
+
+// Resizable chat/overview split (md+ only - the two panels stack on
+// mobile instead of sitting side by side, so there's nothing to drag
+// there). 40 matches the previous fixed md:w-[40%] left panel.
+const DEFAULT_LEFT_PANEL_PCT = 40;
+const MIN_LEFT_PANEL_PCT = 25;
+const MAX_LEFT_PANEL_PCT = 65;
+// A percentage-only range can still starve a panel to near-nothing on a
+// narrower md-range viewport (25% of a 768px window is 192px) - this
+// absolute floor is checked alongside the percentage bounds so neither
+// panel ever collapses below a usable width regardless of window size.
+const MIN_PANEL_PX = 320;
+
+function clampLeftPanelPct(rawPct: number, containerWidthPx: number): number {
+  const minPctForFloor = (MIN_PANEL_PX / containerWidthPx) * 100;
+  const maxPctForFloor = 100 - (MIN_PANEL_PX / containerWidthPx) * 100;
+  const lower = Math.max(MIN_LEFT_PANEL_PCT, minPctForFloor);
+  const upper = Math.min(MAX_LEFT_PANEL_PCT, maxPctForFloor);
+  // The container is so narrow that even both 320px floors can't fit
+  // side by side - fall back to an even split rather than an
+  // inverted/invalid clamp range.
+  if (lower > upper) return 50;
+  return Math.min(Math.max(rawPct, lower), upper);
+}
 
 type Project = {
   id: string;
@@ -56,6 +84,60 @@ export default function ProjektPage() {
   const projectId = params.projectId;
   const supabase = createClient();
 
+  // Dashboard sidebar as an on-demand overlay (not a permanently-visible
+  // rail) - opening/closing it never touches the resizable chat/overview
+  // split below, so it can't disturb leftPanelPct or require redoing its
+  // min-width math. It reuses DashboardSidebar exactly as dashboard/
+  // page.tsx and installningar/page.tsx already do, just inside a
+  // fixed-position wrapper instead of a normal flex row.
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isSidebarOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsSidebarOpen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isSidebarOpen]);
+
+  const [leftPanelPct, setLeftPanelPct] = useState(DEFAULT_LEFT_PANEL_PCT);
+  const splitContainerRef = useRef<HTMLDivElement | null>(null);
+  const isDraggingDividerRef = useRef(false);
+
+  const handleDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    isDraggingDividerRef.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    // Dragging over the chat/overview text without this selects it as a
+    // side effect on every move - purely a drag-UX annoyance, not a data
+    // issue, but distracting enough to be worth suppressing for the
+    // duration of the drag.
+    document.body.style.userSelect = "none";
+  };
+  const handleDividerPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingDividerRef.current || !splitContainerRef.current) return;
+    const rect = splitContainerRef.current.getBoundingClientRect();
+    const rawPct = ((e.clientX - rect.left) / rect.width) * 100;
+    setLeftPanelPct(clampLeftPanelPct(rawPct, rect.width));
+  };
+  const handleDividerPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    isDraggingDividerRef.current = false;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    document.body.style.userSelect = "";
+  };
+  const handleDividerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const containerWidth = splitContainerRef.current?.getBoundingClientRect().width;
+    if (!containerWidth) return;
+    const STEP_PCT = 2;
+    if (e.key === "ArrowLeft") {
+      setLeftPanelPct((pct) => clampLeftPanelPct(pct - STEP_PCT, containerWidth));
+    } else if (e.key === "ArrowRight") {
+      setLeftPanelPct((pct) => clampLeftPanelPct(pct + STEP_PCT, containerWidth));
+    } else if (e.key === "Home") {
+      setLeftPanelPct(clampLeftPanelPct(DEFAULT_LEFT_PANEL_PCT, containerWidth));
+    }
+  };
+
   const [user, setUser] = useState<User | null>(null);
   const [project, setProject] = useState<Project | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -66,6 +148,16 @@ export default function ProjektPage() {
   >({});
   const [detaljplanUploaded, setDetaljplanUploaded] = useState(false);
   const [situationsplanUploaded, setSituationsplanUploaded] = useState(false);
+  // Lifted out of ProjectInterviewChat so the chat (which triggers
+  // generation) and the document panel (which now renders the result)
+  // can share it - the chat itself never renders a drawing inline again.
+  const [generatedDrawings, setGeneratedDrawings] = useState<GeneratedDrawings | null>(null);
+  // Lifted out of RitningarSection (was local state there) so the future
+  // NL-editing input (NL-4, in the Redigera tab) can write to the same
+  // model the canvas/form (Phase D) reads from and edits - same lift
+  // pattern as generatedDrawings above. null means "no user edits yet,
+  // follow the live answers-derived model" - see ProjectDocument.tsx.
+  const [editedDrawingModel, setEditedDrawingModel] = useState<DrawingModel | null>(null);
   const [assessment, setAssessment] = useState<{ verdict?: Verdict; summary?: string } | null>(
     null,
   );
@@ -271,10 +363,36 @@ export default function ProjektPage() {
     [answers.projectType, answers.propertyDesignation].filter(Boolean).join(" · ") ||
     "Ditt ärende";
 
+  // A brand-new project (nothing collected yet) renders the chat
+  // fullwidth with no overview panel at all, rather than a panel full of
+  // placeholder dashes - see lib/overview-sections.ts, the same presence
+  // computation ProjectDocument uses per-section internally. The panel
+  // (and the resizable divider) only mount once there's at least one
+  // real value anywhere to show.
+  const overviewPresence = computeOverviewSectionsPresence({
+    answers,
+    photos,
+    assessment,
+    generatedDrawings,
+    editedDrawingModel,
+    detaljplanUploaded,
+    situationsplanUploaded,
+  });
+  const showOverviewPanel = hasAnyOverviewContent(overviewPresence);
+
   return (
     <div className="flex h-dvh flex-col">
       <header className="grid h-14 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center border-b border-border bg-background px-4 sm:px-6">
-        <div className="flex min-w-0 items-center gap-5">
+        <div className="flex min-w-0 items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setIsSidebarOpen(true)}
+            aria-label="Öppna meny"
+            aria-expanded={isSidebarOpen}
+            className="-ml-1.5 flex size-8 shrink-0 items-center justify-center rounded-lg text-foreground/50 hover:bg-muted hover:text-foreground/80"
+          >
+            <MenuIcon className="size-4.5" />
+          </button>
           <Link href="/dashboard" className="inline-flex shrink-0 items-center gap-2.5">
             <span className="grid size-7 place-items-center rounded-xl bg-accent text-accent-foreground">
               <BuildingIcon className="size-4" />
@@ -300,8 +418,65 @@ export default function ProjektPage() {
         </div>
       </header>
 
-      <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
-        <section className="flex h-1/2 min-h-0 flex-col overflow-hidden border-b-2 border-border bg-background p-4 md:h-full md:w-[40%] md:border-r-2 md:border-b-0 md:p-6">
+      {/* Always mounted (not conditionally rendered) so opacity/transform
+          transitions actually have something to animate between - a
+          conditional {isSidebarOpen && ...} would pop in/out instantly
+          instead of sliding. Closing it never touches the resizable
+          split below: this is a fixed-position overlay outside normal
+          document flow, so leftPanelPct and its layout are untouched. */}
+      <div
+        className={`fixed inset-0 z-50 transition-opacity duration-200 ${
+          isSidebarOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+        }`}
+        aria-hidden={!isSidebarOpen}
+      >
+        {/* A real <button>, not a div with onClick - focusable and
+            keyboard-activatable (Enter/Space) for free, and unambiguous
+            that it's clickable (cursor-pointer + hover dimming), not
+            just decorative dimming with hidden functionality. */}
+        <button
+          type="button"
+          onClick={() => setIsSidebarOpen(false)}
+          aria-label="Stäng meny"
+          tabIndex={isSidebarOpen ? 0 : -1}
+          className="absolute inset-0 h-full w-full cursor-pointer bg-black/30 transition-colors hover:bg-black/40"
+        />
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Meny"
+          className={`relative flex h-full items-start transition-transform duration-200 ${
+            isSidebarOpen ? "translate-x-0" : "-translate-x-full"
+          }`}
+        >
+          <DashboardSidebar user={user} onSignOut={handleSignOut} />
+          {/* Explicit, always-visible close affordance right next to the
+              panel - doesn't rely on the user noticing the scrim (or the
+              backdrop button above) is clickable at all. */}
+          <button
+            type="button"
+            onClick={() => setIsSidebarOpen(false)}
+            aria-label="Stäng meny"
+            tabIndex={isSidebarOpen ? 0 : -1}
+            className="mt-4 ml-3 flex size-9 shrink-0 items-center justify-center rounded-full bg-background text-foreground/60 shadow-md hover:bg-muted hover:text-foreground/90"
+          >
+            <CloseIcon className="size-4.5" />
+          </button>
+        </div>
+      </div>
+
+      <div
+        ref={splitContainerRef}
+        className="flex flex-1 flex-col overflow-hidden md:flex-row"
+        style={{ "--left-panel-pct": `${leftPanelPct}%` } as React.CSSProperties}
+      >
+        <section
+          className={
+            showOverviewPanel
+              ? "flex h-1/2 min-h-0 flex-col overflow-hidden border-b-2 border-border bg-background p-4 md:h-full md:w-[var(--left-panel-pct)] md:border-b-0 md:p-6"
+              : "flex h-full min-h-0 w-full flex-col overflow-hidden bg-background p-4 md:p-6"
+          }
+        >
           {project.initial_description && (
             <div className="mb-4 shrink-0 rounded-xl border border-border bg-muted p-4 text-sm">
               <p className="font-medium">Från din beskrivning</p>
@@ -316,9 +491,9 @@ export default function ProjektPage() {
               projectId={project.id}
               answers={answers}
               photos={photos}
-              facadeAttributes={facadeAttributes}
+              isEmptyState={!showOverviewPanel}
               onAnswersChange={handleAnswersChange}
-              onFacadeAttributeChange={handleFacadeAttributeChange}
+              onDrawingsGenerated={setGeneratedDrawings}
               onPhotoUploaded={refreshPhotoFor}
               onSituationsplanSaved={() => setSituationsplanUploaded(true)}
               onDetaljplanUploaded={() => {
@@ -336,27 +511,49 @@ export default function ProjektPage() {
           </div>
         </section>
 
-        <section className="h-1/2 flex-1 overflow-y-auto bg-muted md:h-full">
-          <div className="sticky top-0 z-10 flex h-12 items-center justify-between border-b border-border bg-muted/95 px-6 backdrop-blur">
-            <span className="text-sm font-medium">Översikt</span>
-            <span className="flex items-center gap-1.5 text-xs text-foreground/50">
-              <CheckIcon className="size-3.5 text-accent" /> Sparad automatiskt
-            </span>
-          </div>
-          <article className="px-4 py-10 sm:px-10 sm:py-14">
-            <ProjectDocument
-              projectId={project.id}
-              answers={answers}
-              photos={photos}
-              facadeAttributes={facadeAttributes}
-              detaljplanUploaded={detaljplanUploaded}
-              situationsplanUploaded={situationsplanUploaded}
-              assessment={assessment}
-              onAnswersChange={handleAnswersChange}
-              onFacadeAttributeChange={handleFacadeAttributeChange}
+        {showOverviewPanel && (
+          <>
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Ändra bredd på panelerna"
+              aria-valuenow={Math.round(leftPanelPct)}
+              aria-valuemin={MIN_LEFT_PANEL_PCT}
+              aria-valuemax={MAX_LEFT_PANEL_PCT}
+              tabIndex={0}
+              onPointerDown={handleDividerPointerDown}
+              onPointerMove={handleDividerPointerMove}
+              onPointerUp={handleDividerPointerUp}
+              onKeyDown={handleDividerKeyDown}
+              className="hidden w-1.5 shrink-0 cursor-col-resize touch-none bg-border transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none md:block"
             />
-          </article>
-        </section>
+
+            <section className="h-1/2 flex-1 overflow-y-auto bg-muted md:h-full">
+              <div className="sticky top-0 z-10 flex h-12 items-center justify-between border-b border-border bg-muted/95 px-6 backdrop-blur">
+                <span className="text-sm font-medium">Översikt</span>
+                <span className="flex items-center gap-1.5 text-xs text-foreground/50">
+                  <CheckIcon className="size-3.5 text-accent" /> Sparad automatiskt
+                </span>
+              </div>
+              <article className="px-4 py-10 sm:px-10 sm:py-14">
+                <ProjectDocument
+                  projectId={project.id}
+                  answers={answers}
+                  photos={photos}
+                  facadeAttributes={facadeAttributes}
+                  detaljplanUploaded={detaljplanUploaded}
+                  situationsplanUploaded={situationsplanUploaded}
+                  assessment={assessment}
+                  generatedDrawings={generatedDrawings}
+                  editedDrawingModel={editedDrawingModel}
+                  onEditedDrawingModelChange={setEditedDrawingModel}
+                  onAnswersChange={handleAnswersChange}
+                  onFacadeAttributeChange={handleFacadeAttributeChange}
+                />
+              </article>
+            </section>
+          </>
+        )}
       </div>
     </div>
   );

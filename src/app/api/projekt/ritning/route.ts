@@ -64,6 +64,12 @@ export async function POST(req: Request) {
   const windowsPerDirectionAnswers = (answers.windowsPerDirection ?? {}) as Partial<
     Record<Direction, string>
   >;
+  // mainEntranceDirection is one of interview.ts's ENUM_FIELDS now (a
+  // case-insensitively matched, canonical-casing-normalized value at
+  // extraction time) - this can trust it's already exactly one of
+  // DIRECTIONS' values, or absent. See interview.ts for the live-
+  // observed casing bug ("Söder" vs "söder") that used to require a
+  // local .toLowerCase() workaround here.
   const mainEntranceDirection = DIRECTIONS.includes(answers.mainEntranceDirection as Direction)
     ? (answers.mainEntranceDirection as Direction)
     : undefined;

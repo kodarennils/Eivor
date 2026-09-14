@@ -544,6 +544,40 @@ describe("parseInterviewMessage: enum-constrained fields (#2/#5/#6)", () => {
     assert.equal(parsed.answers.projectType, "Nybyggnad");
     assert.equal("requiresKontrollansvarig" in parsed.answers, false);
   });
+
+  // Regression: ENUM_FIELDS matching was exact-case and had only ever
+  // been tested against wrong WORDS ("Osäkert", "nybygge"), never a
+  // casing variant of an otherwise-valid value - the exact shape of the
+  // mainEntranceDirection bug ("Söder" vs "söder"), just never verified
+  // for these three fields specifically until now. A lowercase "ja"
+  // used to be silently rejected the same way a genuinely wrong value
+  // is; it should now be accepted and normalized to the canonical
+  // casing from the allowed list.
+  test("accepts a casing variant of a valid value and normalizes it to the canonical casing", () => {
+    const raw = '```json\n{"answers": {"withinDetailedPlan": "ja"}, "request": null, "done": false}\n```';
+    assert.equal(parseInterviewMessage(raw).answers.withinDetailedPlan, "Ja");
+  });
+
+  test("accepts an all-caps casing variant too, not just lowercase", () => {
+    const raw = '```json\n{"answers": {"requiresKontrollansvarig": "NEJ"}, "request": null, "done": false}\n```';
+    assert.equal(parseInterviewMessage(raw).answers.requiresKontrollansvarig, "Nej");
+  });
+
+  // mainEntranceDirection now goes through the exact same ENUM_FIELDS
+  // gate as the other three, closing the live-observed bug where two
+  // separate downstream consumers each had to work around the casing
+  // mismatch themselves.
+  test("mainEntranceDirection: accepts a casing variant and normalizes it (the live-observed bug)", () => {
+    const raw =
+      '```json\n{"answers": {"mainEntranceDirection": "Söder"}, "request": null, "done": false}\n```';
+    assert.equal(parseInterviewMessage(raw).answers.mainEntranceDirection, "söder");
+  });
+
+  test("mainEntranceDirection: drops a value that isn't a real direction", () => {
+    const raw =
+      '```json\n{"answers": {"mainEntranceDirection": "nordost"}, "request": null, "done": false}\n```';
+    assert.equal("mainEntranceDirection" in parseInterviewMessage(raw).answers, false);
+  });
 });
 
 // Risk-inventory item #8: a non-numeric window answer used to pass

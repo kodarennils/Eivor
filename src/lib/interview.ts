@@ -60,10 +60,19 @@ const SCALAR_FIELDS = [
 // means it's treated as "not yet answered" - determinePhase() keeps the
 // relevant phase active and the model gets asked again, rather than a
 // bad value being trusted and persisted.
+// mainEntranceDirection joined this list after a live-observed instance
+// of the exact same bug: the model wrote "Söder" (valid, just a
+// different case than DIRECTIONS' lowercase values), which two separate
+// downstream consumers (api/projekt/ritning, drawing-schema-from-
+// answers.ts) each had to work around with their own ad-hoc
+// .toLowerCase() call. Gating it here instead - same as the other three
+// - means it arrives at every consumer already canonical, and those two
+// call sites no longer need to know about the casing risk at all.
 const ENUM_FIELDS: Partial<Record<(typeof SCALAR_FIELDS)[number], readonly string[]>> = {
   projectType: PROJECT_TYPE_OPTIONS,
   withinDetailedPlan: YES_NO_UNKNOWN_OPTIONS,
   requiresKontrollansvarig: YES_NO_UNKNOWN_OPTIONS,
+  mainEntranceDirection: DIRECTIONS,
 };
 
 // What embedded widget, if any, the chat should show next - the model
@@ -153,8 +162,19 @@ export function parseInterviewMessage(raw: string): ParsedInterviewMessage {
       if (typeof value === "string" && value.trim()) {
         const trimmed = value.trim();
         const allowedValues = ENUM_FIELDS[field];
-        if (allowedValues && !allowedValues.includes(trimmed)) {
-          continue; // out-of-enum value - drop it, don't trust it verbatim
+        if (allowedValues) {
+          // Case-insensitive match, but store the CANONICAL casing from
+          // the allowed list (not whatever casing the model happened to
+          // use) - the mainEntranceDirection bug was exactly this: a
+          // valid value ("Söder") rejected/mismatched purely on casing,
+          // never tested against a casing variant of an otherwise-valid
+          // enum member, only against wrong words entirely.
+          const canonical = allowedValues.find(
+            (allowed) => allowed.toLowerCase() === trimmed.toLowerCase(),
+          );
+          if (!canonical) continue; // out-of-enum value - drop it, don't trust it verbatim
+          answers[field] = canonical;
+          continue;
         }
         answers[field] = trimmed;
       }

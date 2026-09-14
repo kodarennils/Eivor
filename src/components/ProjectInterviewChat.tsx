@@ -7,23 +7,58 @@ import { SituationsplanUpload } from "@/components/SituationsplanUpload";
 import { DetaljplanUpload } from "@/components/DetaljplanUpload";
 import { DIRECTIONS, DIRECTION_LABEL, type Direction } from "@/lib/project-fields";
 import { describeChanges, phaseProgress, type InterviewRequest } from "@/lib/interview";
-import { buildTekniskBeskrivning, type TekniskBeskrivning } from "@/lib/teknisk-beskrivning";
+import { buildTekniskBeskrivning } from "@/lib/teknisk-beskrivning";
 import type { KontrollplanPunkt } from "@/app/api/projekt/kontrollplan/route";
+import type { GeneratedDrawings } from "@/lib/generated-drawings";
 import { ReviewScreen } from "@/components/ReviewScreen";
-import type { FacadeAttribute } from "@/components/editable-answer-fields";
 
 type ApiMessage = { role: "user" | "assistant"; content: string };
 
-type Drawings = {
-  plan: string;
-  elevations: Record<Direction, string>;
-  section: string;
-  floorPlan: string;
-  situationsplan: string | null;
-  kontrollplan: KontrollplanPunkt[];
-  kontrollplanError: string | null;
-  tekniskBeskrivning: TekniskBeskrivning;
-};
+// One JSON object per line (NDJSON) from /api/projekt/interview's
+// streaming response - see that route for the server side. "delta"
+// events arrive many times per reply as the model's own prose streams
+// in; exactly one terminal "final" (or "error") event closes out the
+// turn. Never trusted at face value - same discipline as isValidMessage
+// elsewhere in this codebase - a line that doesn't match one of these
+// shapes is dropped rather than acted on.
+type StreamEvent =
+  | { type: "delta"; text: string }
+  | {
+      type: "final";
+      message: string;
+      answers: Record<string, unknown>;
+      request: InterviewRequest;
+      done: boolean;
+    }
+  | { type: "error"; error: string };
+
+function parseStreamEvent(raw: unknown): StreamEvent | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const obj = raw as Record<string, unknown>;
+
+  if (obj.type === "delta" && typeof obj.text === "string") {
+    return { type: "delta", text: obj.text };
+  }
+  if (
+    obj.type === "final" &&
+    typeof obj.message === "string" &&
+    typeof obj.answers === "object" &&
+    obj.answers !== null &&
+    typeof obj.done === "boolean"
+  ) {
+    return {
+      type: "final",
+      message: obj.message,
+      answers: obj.answers as Record<string, unknown>,
+      request: (obj.request ?? null) as InterviewRequest,
+      done: obj.done,
+    };
+  }
+  if (obj.type === "error" && typeof obj.error === "string") {
+    return { type: "error", error: obj.error };
+  }
+  return null;
+}
 
 const DETALJPLAN_ANSWER_TEXT: Record<"Ja" | "Nej" | "Vet inte", string> = {
   Ja: "Ja, fastigheten omfattas av detaljplan.",
@@ -31,23 +66,27 @@ const DETALJPLAN_ANSWER_TEXT: Record<"Ja" | "Nej" | "Vet inte", string> = {
   "Vet inte": "Jag vet inte.",
 };
 
+// The chat is pure conversation now - no drawing (SVG or Konva) ever
+// renders inline here. "Generera ritningar" is still triggered from the
+// chat (it's the natural last step of the conversational review), but
+// its RESULT is bubbled up via onDrawingsGenerated and rendered in the
+// document panel's "Ritningar" section instead of a chat timeline item.
 type TimelineItem =
   | { kind: "message"; role: "user" | "assistant"; content: string }
   | { kind: "confirmation"; text: string }
   | { kind: "photo"; id: string; direction: Direction; uploaded: boolean }
   | { kind: "situationsplan"; id: string; saved: boolean; skipped: boolean }
   | { kind: "detaljplan-status"; id: string; resolvedLabel: string | null }
-  | { kind: "generate-cta" }
-  | { kind: "drawings"; drawings: Drawings };
+  | { kind: "generate-cta" };
 
 export function ProjectInterviewChat({
   userId,
   projectId,
   answers = {},
   photos = {},
-  facadeAttributes = {},
+  isEmptyState = false,
   onAnswersChange,
-  onFacadeAttributeChange,
+  onDrawingsGenerated,
   onPhotoUploaded: onPhotoUploadedProp,
   onSituationsplanSaved: onSituationsplanSavedProp,
   onDetaljplanUploaded: onDetaljplanUploadedProp,
@@ -56,9 +95,16 @@ export function ProjectInterviewChat({
   projectId: string;
   answers: Record<string, unknown>;
   photos?: Partial<Record<Direction, string>>;
-  facadeAttributes?: Partial<Record<Direction, FacadeAttribute>>;
+  // True while the project has zero collected data (page.tsx's
+  // showOverviewPanel is false, see lib/overview-sections.ts) - swaps
+  // this component's own layout to a centered "starting point" screen
+  // instead of the narrow header+scroll+input column used once the
+  // overview panel exists alongside it. Purely a container/layout
+  // change - message bubble styling, colors, and the input's functional
+  // behavior are identical in both branches below.
+  isEmptyState?: boolean;
   onAnswersChange?: (answers: Record<string, unknown>) => void;
-  onFacadeAttributeChange?: (direction: Direction, attribute: FacadeAttribute) => void;
+  onDrawingsGenerated?: (drawings: GeneratedDrawings) => void;
   onPhotoUploaded?: (direction: Direction) => void;
   onSituationsplanSaved?: () => void;
   onDetaljplanUploaded?: () => void;
@@ -66,9 +112,17 @@ export function ProjectInterviewChat({
   const [timeline, setTimeline] = useState<TimelineItem[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  // isLoading covers the whole request (keeps the input disabled);
+  // isStreaming is only true once the first real text delta has
+  // arrived, so "Eivor tänker…" can hand off to the actual growing
+  // message bubble instead of sitting alongside it.
+  const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isGeneratingDrawings, setIsGeneratingDrawings] = useState(false);
   const [drawingError, setDrawingError] = useState<string | null>(null);
+  // Replaces the old "does the timeline already contain a drawings item"
+  // check, now that drawings never enter the timeline at all.
+  const [hasGeneratedDrawings, setHasGeneratedDrawings] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
   const apiMessagesRef = useRef<ApiMessage[]>([]);
@@ -99,6 +153,7 @@ export function ProjectInterviewChat({
   async function send(nextApiMessages: ApiMessage[]) {
     setError(null);
     setIsLoading(true);
+    setIsStreaming(false);
     apiMessagesRef.current = nextApiMessages;
 
     try {
@@ -107,12 +162,92 @@ export function ProjectInterviewChat({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ projectId, messages: nextApiMessages }),
       });
-      const data = await res.json();
 
-      if (!res.ok) {
-        setError(data.error ?? "Något gick fel.");
+      if (!res.ok || !res.body) {
+        let errorMessage = "Något gick fel.";
+        try {
+          const errorBody = await res.json();
+          errorMessage = errorBody?.error ?? errorMessage;
+        } catch {
+          // Non-JSON error body (e.g. a proxy/edge failure before the
+          // route even ran) - fall back to the generic message above
+          // rather than surface a parse error instead of the real one.
+        }
+        setError(errorMessage);
         return;
       }
+
+      // Reads the NDJSON stream (see the interview route) and renders
+      // "delta" text progressively - the assistant's timeline bubble is
+      // pushed lazily on the FIRST delta (not upfront empty), so there's
+      // no flash of an empty bubble sitting next to "Eivor tänker…".
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let streamedText = "";
+      let hasPushedMessage = false;
+      let finalEvent: Extract<StreamEvent, { type: "final" }> | null = null;
+      let streamErrorMessage: string | null = null;
+
+      readLoop: while (true) {
+        const { done: readerDone, value } = await reader.read();
+        if (readerDone) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let newlineIndex = buffer.indexOf("\n");
+        while (newlineIndex !== -1) {
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+          newlineIndex = buffer.indexOf("\n");
+          if (!line.trim()) continue;
+
+          let rawEvent: unknown;
+          try {
+            rawEvent = JSON.parse(line);
+          } catch {
+            continue; // malformed line - skip rather than crash the reader
+          }
+          const event = parseStreamEvent(rawEvent);
+          if (!event) continue;
+
+          if (event.type === "delta") {
+            streamedText += event.text;
+            setIsStreaming(true);
+            if (!hasPushedMessage) {
+              hasPushedMessage = true;
+              setTimeline((prev) => [
+                ...prev,
+                { kind: "message", role: "assistant", content: streamedText },
+              ]);
+            } else {
+              const textForThisUpdate = streamedText;
+              setTimeline((prev) => {
+                const next = [...prev];
+                const last = next[next.length - 1];
+                if (last?.kind === "message" && last.role === "assistant") {
+                  next[next.length - 1] = { ...last, content: textForThisUpdate };
+                }
+                return next;
+              });
+            }
+          } else if (event.type === "final") {
+            finalEvent = event;
+          } else {
+            streamErrorMessage = event.error;
+            break readLoop;
+          }
+        }
+      }
+
+      if (streamErrorMessage) {
+        setError(streamErrorMessage);
+        return;
+      }
+      if (!finalEvent) {
+        setError("Kunde inte tolka svaret från servern.");
+        return;
+      }
+      const data = finalEvent;
 
       apiMessagesRef.current = [
         ...nextApiMessages,
@@ -124,13 +259,26 @@ export function ProjectInterviewChat({
       onAnswersChange?.(answersRef.current);
 
       setTimeline((prev) => {
-        const next: TimelineItem[] = [
-          ...prev,
-          { kind: "message", role: "assistant", content: data.message },
-        ];
+        const next: TimelineItem[] = [...prev];
+        // The final event's message is authoritative - it can carry a
+        // kontrollansvarig-disclaimer/room-percentage append, or the
+        // empty-reply fallback, none of which streamed as deltas.
+        // Overwrite whatever accumulated from deltas rather than trust
+        // it blindly, same "never trust the raw stream, validate before
+        // use" discipline as everywhere else in this pipeline.
+        if (hasPushedMessage) {
+          const last = next[next.length - 1];
+          if (last?.kind === "message" && last.role === "assistant") {
+            next[next.length - 1] = { ...last, content: data.message };
+          } else {
+            next.push({ kind: "message", role: "assistant", content: data.message });
+          }
+        } else {
+          next.push({ kind: "message", role: "assistant", content: data.message });
+        }
         if (changeNote) next.push({ kind: "confirmation", text: changeNote });
         appendRequestWidget(next, data.request);
-        if (data.done && !hasGenerateStep(next)) {
+        if (data.done && !hasGenerateStep(next) && !hasGeneratedDrawings) {
           next.push({ kind: "generate-cta" });
         }
         return next;
@@ -139,6 +287,7 @@ export function ProjectInterviewChat({
       setError("Kunde inte nå servern. Kontrollera din anslutning och försök igen.");
     } finally {
       setIsLoading(false);
+      setIsStreaming(false);
     }
   }
 
@@ -156,7 +305,7 @@ export function ProjectInterviewChat({
   }
 
   function hasGenerateStep(items: TimelineItem[]) {
-    return items.some((item) => item.kind === "generate-cta" || item.kind === "drawings");
+    return items.some((item) => item.kind === "generate-cta");
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -272,20 +421,22 @@ export function ProjectInterviewChat({
         ? null
         : (kontrollplanData.error ?? "Kunde inte ta fram kontrollplan.");
 
+      onDrawingsGenerated?.({
+        plan: data.plan,
+        elevations: data.elevations,
+        section: data.section,
+        floorPlan: data.floorPlan,
+        situationsplan: data.situationsplan ?? null,
+        kontrollplan,
+        kontrollplanError,
+        tekniskBeskrivning: buildTekniskBeskrivning(answers, data.facadeAttributes ?? {}),
+      });
+      setHasGeneratedDrawings(true);
       setTimeline((prev) => [
         ...prev,
         {
-          kind: "drawings",
-          drawings: {
-            plan: data.plan,
-            elevations: data.elevations,
-            section: data.section,
-            floorPlan: data.floorPlan,
-            situationsplan: data.situationsplan ?? null,
-            kontrollplan,
-            kontrollplanError,
-            tekniskBeskrivning: buildTekniskBeskrivning(answers, data.facadeAttributes ?? {}),
-          },
+          kind: "confirmation",
+          text: "Ritningar genererade - se Ritningar i översiktspanelen till höger.",
         },
       ]);
     } catch {
@@ -293,6 +444,97 @@ export function ProjectInterviewChat({
     } finally {
       setIsGeneratingDrawings(false);
     }
+  }
+
+  // Empty pre-data state: greeting, messages so far, and the input all
+  // live as one centered block instead of the usual fixed header +
+  // scrolling middle + pinned-bottom-input column - a structurally
+  // different layout, not just restyled classes on the same tree, so
+  // it's kept as its own early return rather than threading conditional
+  // classNames through the shared JSX below. TimelineEntry (message
+  // bubbles, widgets) is reused completely unchanged; only the
+  // surrounding container and the input's own styling differ here.
+  if (isEmptyState) {
+    return (
+      <div className="flex h-full min-h-0 flex-col items-center overflow-y-auto">
+        <div className="flex w-full max-w-[680px] flex-1 flex-col justify-center px-4 pt-[18vh] pb-[10vh]">
+          <div className="mb-12 text-center">
+            <h1 className="text-3xl font-semibold sm:text-4xl">Berätta om ditt projekt</h1>
+          </div>
+
+          <div className="flex flex-col gap-5">
+            {timeline.map((item, i) => (
+              <TimelineEntry
+                key={i}
+                item={item}
+                isLatestMessage={i === lastMessageIndex}
+                userId={userId}
+                projectId={projectId}
+                answers={answers}
+                isGeneratingDrawings={isGeneratingDrawings}
+                drawingError={drawingError}
+                onPhotoUploaded={handlePhotoUploaded}
+                onSituationsplanSaved={handleSituationsplanSaved}
+                onSkipSituationsplan={handleSkipSituationsplan}
+                onDetaljplanStatusAnswer={handleDetaljplanStatusAnswer}
+                onDetaljplanUpload={handleDetaljplanUpload}
+                onGenerateDrawings={handleGenerateDrawings}
+              />
+            ))}
+
+            {isLoading && !isStreaming && (
+              <div className="flex items-center gap-2 text-xs font-semibold text-accent">
+                <span className="grid size-5 place-items-center rounded-sm bg-accent text-accent-foreground">
+                  <BuildingIcon className="size-3" />
+                </span>
+                <span className="font-normal text-foreground/50">Eivor tänker…</span>
+              </div>
+            )}
+
+            {error && (
+              <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+                {error}
+              </p>
+            )}
+
+            <div ref={scrollRef} />
+          </div>
+
+          {/* Same functional form as the normal state below (identical
+              handlers/state) - just deliberately roomier and rounder so
+              it reads as an inviting starting point, not the compact
+              pinned-bottom bar it becomes once the conversation is
+              underway. */}
+          <form
+            onSubmit={handleSubmit}
+            className="mt-6 flex shrink-0 items-center gap-2 rounded-2xl border border-gray-300 bg-background px-3 py-2 shadow-sm focus-within:border-gray-400"
+          >
+            <button
+              type="button"
+              aria-label="Bifoga fil"
+              className="flex size-9 shrink-0 items-center justify-center rounded-full text-foreground/40 hover:text-foreground/70"
+            >
+              <PaperclipIcon className="h-4.5 w-4.5" />
+            </button>
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Skriv ett meddelande…"
+              disabled={isLoading}
+              className="min-w-0 flex-1 bg-transparent px-1 py-3.5 text-base outline-none disabled:opacity-50"
+            />
+            <button
+              type="submit"
+              disabled={isLoading || !input.trim()}
+              aria-label="Skicka"
+              className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent text-accent-foreground disabled:opacity-40"
+            >
+              <ArrowUpIcon className="h-4.5 w-4.5" />
+            </button>
+          </form>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -314,12 +556,8 @@ export function ProjectInterviewChat({
               userId={userId}
               projectId={projectId}
               answers={answers}
-              photos={photos}
-              facadeAttributes={facadeAttributes}
               isGeneratingDrawings={isGeneratingDrawings}
               drawingError={drawingError}
-              onAnswersChange={onAnswersChange}
-              onFacadeAttributeChange={onFacadeAttributeChange}
               onPhotoUploaded={handlePhotoUploaded}
               onSituationsplanSaved={handleSituationsplanSaved}
               onSkipSituationsplan={handleSkipSituationsplan}
@@ -329,7 +567,7 @@ export function ProjectInterviewChat({
             />
           ))}
 
-          {isLoading && (
+          {isLoading && !isStreaming && (
             <div className="flex items-center gap-2 text-xs font-semibold text-accent">
               <span className="grid size-5 place-items-center rounded-sm bg-accent text-accent-foreground">
                 <BuildingIcon className="size-3" />
@@ -385,12 +623,8 @@ function TimelineEntry({
   userId,
   projectId,
   answers,
-  photos,
-  facadeAttributes,
   isGeneratingDrawings,
   drawingError,
-  onAnswersChange,
-  onFacadeAttributeChange,
   onPhotoUploaded,
   onSituationsplanSaved,
   onSkipSituationsplan,
@@ -403,12 +637,8 @@ function TimelineEntry({
   userId: string;
   projectId: string;
   answers: Record<string, unknown>;
-  photos: Partial<Record<Direction, string>>;
-  facadeAttributes: Partial<Record<Direction, FacadeAttribute>>;
   isGeneratingDrawings: boolean;
   drawingError: string | null;
-  onAnswersChange?: (answers: Record<string, unknown>) => void;
-  onFacadeAttributeChange?: (direction: Direction, attribute: FacadeAttribute) => void;
   onPhotoUploaded: (id: string, direction: Direction) => void;
   onSituationsplanSaved: (id: string) => void;
   onSkipSituationsplan: (id: string) => void;
@@ -435,7 +665,16 @@ function TimelineEntry({
             Eivor
           </div>
           <p className={`whitespace-pre-wrap ${isLatestMessage ? "" : "text-gray-500"}`}>
-            {item.content}
+            {/* trimEnd, not the raw content: live-verified that the
+                streaming reply can briefly carry trailing "\n\n" (the
+                gap before the ```json block in the model's own raw
+                output, only trimmed once the `final` event's validated
+                message replaces it) - with whitespace-pre-wrap that
+                would flash a blank line at the bottom of the bubble for
+                the ~1s the reply is still streaming. Harmless no-op
+                once a message is finalized (final.message is already
+                trimmed server-side). */}
+            {item.content.trimEnd()}
           </p>
         </div>
       );
@@ -538,129 +777,15 @@ function TimelineEntry({
     );
   }
 
-  if (item.kind === "generate-cta") {
-    return (
-      <ReviewScreen
-        projectId={projectId}
-        answers={answers}
-        photos={photos}
-        facadeAttributes={facadeAttributes}
-        onAnswersChange={onAnswersChange ?? (() => {})}
-        onFacadeAttributeChange={onFacadeAttributeChange ?? (() => {})}
-        onGenerate={onGenerateDrawings}
-        isGenerating={isGeneratingDrawings}
-        error={drawingError}
-      />
-    );
-  }
-
+  // "generate-cta" is the only remaining kind - the review screen itself
+  // isn't a drawing (it's the review/confirm step before generating), so
+  // it stays in chat as the natural last step of the conversation.
   return (
-    <div className="flex flex-col gap-6">
-      <DrawingCard title="Planritning (volym)" svg={item.drawings.plan} />
-      <div className="grid gap-6 sm:grid-cols-2">
-        {DIRECTIONS.map((direction) => (
-          <DrawingCard
-            key={direction}
-            title={`Fasad ${DIRECTION_LABEL[direction].toLowerCase()}`}
-            svg={item.drawings.elevations[direction]}
-          />
-        ))}
-      </div>
-      <DrawingCard title="Sektion A-A" svg={item.drawings.section} />
-      <DrawingCard title="Planritning" svg={item.drawings.floorPlan} />
-      {item.drawings.situationsplan && (
-        <DrawingCard title="Situationsplan" svg={item.drawings.situationsplan} />
-      )}
-      <KontrollplanCard
-        punkter={item.drawings.kontrollplan}
-        error={item.drawings.kontrollplanError}
-      />
-      <TekniskBeskrivningCard data={item.drawings.tekniskBeskrivning} />
-    </div>
-  );
-}
-
-function KontrollplanCard({
-  punkter,
-  error,
-}: {
-  punkter: KontrollplanPunkt[];
-  error: string | null;
-}) {
-  return (
-    <div className="rounded-xl border border-border bg-white p-4">
-      <p className="mb-3 text-xs font-medium tracking-wide text-foreground/50 uppercase">
-        Förslag till kontrollplan
-      </p>
-
-      {error ? (
-        <p className="text-sm text-red-700">{error}</p>
-      ) : (
-        <>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-border text-xs text-foreground/50">
-                  <th className="py-2 pr-3 font-medium">Kontrollpunkt</th>
-                  <th className="py-2 pr-3 font-medium">Utförs av</th>
-                  <th className="py-2 font-medium">När</th>
-                </tr>
-              </thead>
-              <tbody>
-                {punkter.map((p, i) => (
-                  <tr key={i} className="border-b border-border last:border-0">
-                    <td className="py-2 pr-3">{p.kontrollpunkt}</td>
-                    <td className="py-2 pr-3 text-foreground/70">{p.utforsAv}</td>
-                    <td className="py-2 text-foreground/70">{p.nar}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="mt-4 rounded-xl bg-muted p-3 text-xs text-foreground/60">
-            Detta är ett förslag till kontrollplan baserat på ditt ärende. Det ska granskas
-            och fastställas tillsammans med din kontrollansvarig och/eller byggnadsnämnden.
-          </p>
-        </>
-      )}
-    </div>
-  );
-}
-
-function TekniskBeskrivningCard({ data }: { data: TekniskBeskrivning }) {
-  const rows: [string, string][] = [
-    ["Grundläggning", data.grundlaggning],
-    ["Stomme / fasadmaterial", data.stomme],
-    ["Ventilation", data.ventilation],
-    ["Uppvärmning", data.uppvarmning],
-  ];
-
-  return (
-    <div className="rounded-xl border border-border bg-white p-4">
-      <p className="mb-3 text-xs font-medium tracking-wide text-foreground/50 uppercase">
-        Teknisk beskrivning
-      </p>
-      <div className="divide-y divide-border text-sm">
-        {rows.map(([label, value]) => (
-          <div key={label} className="flex items-baseline justify-between gap-4 py-2">
-            <span className="text-foreground/60">{label}</span>
-            <span className={value === "Ej angivet" ? "text-foreground/40" : "font-medium"}>
-              {value}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function DrawingCard({ title, svg }: { title: string; svg: string }) {
-  return (
-    <div className="rounded-xl border border-border bg-white p-4">
-      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-foreground/50">
-        {title}
-      </p>
-      <div className="overflow-x-auto" dangerouslySetInnerHTML={{ __html: svg }} />
-    </div>
+    <ReviewScreen
+      answers={answers}
+      onGenerate={onGenerateDrawings}
+      isGenerating={isGeneratingDrawings}
+      error={drawingError}
+    />
   );
 }

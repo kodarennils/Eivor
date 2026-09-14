@@ -19,6 +19,7 @@ import {
   type InterviewPhase,
 } from "@/lib/interview";
 import { searchRegelverk, formatRegelverkContext } from "@/lib/regelverk";
+import { JsonFenceFilter } from "@/lib/stream-text-filter";
 import {
   DIRECTIONS,
   DIRECTION_LABEL,
@@ -348,140 +349,196 @@ export async function POST(req: Request) {
 
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-  try {
-    const response = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 1536,
-      system: systemPrompt,
-      messages: messages.length
-        ? (messages as ChatMessage[])
-        : [{ role: "user", content: "Hej, jag är redo att svara på frågor." }],
-    });
-
-    const text = response.content
-      .filter((block): block is Anthropic.TextBlock => block.type === "text")
-      .map((block) => block.text)
-      .join("\n")
-      .trim();
-
-    const parsed = parseInterviewMessage(text);
-
-    // #3: never let an ungrounded kontrollansvarig determination through,
-    // and guarantee the "this is only information, never a substitute"
-    // disclaimer actually reaches the user when the answer is "Ja" -
-    // both previously depended entirely on the model following the
-    // prompt.
-    const disclosed = enforceKontrollansvarigDisclosure({
-      phase,
-      hasGroundingContext: Boolean(kontrollansvarigContext),
-      text: parsed.text,
-      answers: parsed.answers,
-    });
-
-    // #7: a room list that doesn't sum to ~100% renders a visibly broken
-    // floor plan with nothing flagging why - reject it and let the
-    // (still-active) rooms phase naturally re-prompt, rather than
-    // persisting numbers the model itself was told to sanity-check.
-    let finalText = disclosed.text;
-    let finalAnswers = disclosed.answers;
-    if (finalAnswers.rooms) {
-      const roomCheck = validateRoomPercentages(finalAnswers.rooms);
-      if (!roomCheck.valid) {
-        finalText += `\n\nOBS: rumsindelningen du gav summerar till ca ${Math.round(roomCheck.sum)}% istället för ca 100% - kan du dubbelkolla procentandelarna?`;
-        finalAnswers = { ...finalAnswers, rooms: undefined };
+  // Streams the reply so it renders progressively in the chat instead of
+  // "teleporting" in once the full response is ready - see
+  // ProjectInterviewChat.tsx's `send()` for the client side of this
+  // NDJSON-over-fetch protocol (one JSON object per line: "delta" events
+  // while text is arriving, one terminal "final" or "error" event).
+  //
+  // Everything BELOW this comment that isn't about streaming mechanics -
+  // the parse/validate/merge/gate pipeline - is unchanged from the
+  // previous non-streaming version, just moved inside this stream's
+  // start() callback so it still runs once, after the full response is
+  // in, exactly as before. Streaming only changes HOW the reply text
+  // reaches the client while it's being generated, never what ends up
+  // persisted or what the final message/answers/request/done values are.
+  const encoder = new TextEncoder();
+  const bodyStream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      function send(event: Record<string, unknown>) {
+        controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
       }
-    }
 
-    const mergedAnswers = mergeAnswers(existingAnswers, finalAnswers);
+      try {
+        const anthropicStream = anthropic.messages.stream({
+          model: MODEL,
+          max_tokens: 1536,
+          system: systemPrompt,
+          messages: messages.length
+            ? (messages as ChatMessage[])
+            : [{ role: "user", content: "Hej, jag är redo att svara på frågor." }],
+        });
 
-    const { error: upsertError } = await supabase
-      .from("project_answers")
-      .upsert({ project_id: projectId, answers: mergedAnswers }, { onConflict: "project_id" });
-    if (upsertError) {
-      console.error("Kunde inte spara insamlade svar:", upsertError);
-    }
+        // The model's reply always ends with a ```json ...``` block
+        // (parseInterviewMessage's own JSON_BLOCK regex - the prompt's
+        // "avsluta med ett kodblock" instruction) that must never reach
+        // the client as visible text. JsonFenceFilter (its own file,
+        // unit-tested exhaustively against every possible chunk-split
+        // point of a real fence - it caught a real leak bug during
+        // development) tracks exactly how much of the streamed text is
+        // safe to forward at any point.
+        const fenceFilter = new JsonFenceFilter();
 
-    // #13: no reliable deterministic check exists for "1-2 frågor, kort
-    // tonläge" or non-Swedish output (both would need either a second
-    // model call or a heuristic with too high a false-positive rate to
-    // trust) - length is the one honestly checkable piece, logged only,
-    // never used to mutate the response (truncating risks cutting off
-    // legally-relevant text mid-sentence).
-    if (isUnusuallyLong(finalText)) {
-      console.warn(`Interview response unusually long (${finalText.length} chars) for project ${projectId}`);
-    }
+        anthropicStream.on("text", (delta) => {
+          const safeText = fenceFilter.push(delta);
+          if (safeText) send({ type: "delta", text: safeText });
+        });
 
-    const latestUserMessage =
-      [...(messages as ChatMessage[])].reverse().find((m) => m.role === "user")?.content ?? "";
+        const finalMessage = await anthropicStream.finalMessage();
 
-    // #9: cross-check the model's own skipAheadRequested claim against
-    // the user's actual latest message in both directions - see
-    // resolveSkipAheadRequested() for what each direction guards against.
-    const skipAheadRequested = resolveSkipAheadRequested(parsed.skipAheadRequested, latestUserMessage);
+        // No fence ever appeared (parseInterviewMessage's own fallback
+        // path for a malformed reply) - flush whatever tail was still
+        // held back as a possible partial marker.
+        const trailingSafeText = fenceFilter.finish();
+        if (trailingSafeText) {
+          send({ type: "delta", text: trailingSafeText });
+        }
 
-    // The model self-reports "done" in its JSON block, but it doesn't
-    // reliably wait for the wrapup phase to say so (seen live: it
-    // declared done right after the rooms phase, before any facade photo
-    // existed). determinePhase() is the same deterministic source of
-    // truth already used to build the prompt, so use it as a hard gate
-    // instead of trusting the model's own claim.
-    //
-    // #4: phase alone wasn't enough either - requiring wrapup on BOTH
-    // sides of the turn (wrapupRoundTripComplete) guarantees the model's
-    // wrapup questions were actually shown to the user at least once
-    // before done can fire, closing the "declares done on the very first
-    // wrapup turn" gap observed earlier in testing.
-    //
-    // The one deliberate exception: an explicit skip-ahead request (e.g.
-    // "jag vill ha ritningar nu") should surface the "Generera ritningar"
-    // step immediately once the hard minimum for it exists, without
-    // waiting for the rest of the linear phase sequence (photos, rooms,
-    // wrapup) - checked against mergedAnswers so it also works when the
-    // user supplies the missing figure in the very same message as the
-    // request.
-    const phaseAfterMerge = determinePhase(mergedAnswers, uploadedPhotos);
-    const rawDone =
-      (parsed.done && wrapupRoundTripComplete(phase, phaseAfterMerge)) ||
-      (skipAheadRequested && checkDrawingReadiness(mergedAnswers).ready);
+        const text = finalMessage.content
+          .filter((block): block is Anthropic.TextBlock => block.type === "text")
+          .map((block) => block.text)
+          .join("\n")
+          .trim();
 
-    // Same self-report problem as "done": the model can set e.g.
-    // request:"photo:norr" while it was actually instructed to focus on
-    // an earlier phase (seen live during the detaljplan phase, with reply
-    // text that never asked for a photo). Gate against the phase it was
-    // told to focus on this turn, not what it claims.
-    //
-    // #11: gateRequest only checks the request *value* against the
-    // phase - textMatchesRequest additionally checks that the reply text
-    // itself is actually about that request, closing the exact gap that
-    // originally produced the photo-request bug (a request value that
-    // passed its phase check but whose text never mentioned a photo).
-    const gatedRequest = gateRequest(phase, parsed.request, uploadedPhotos);
-    const rawRequest = textMatchesRequest(finalText, gatedRequest) ? gatedRequest : null;
+        const parsed = parseInterviewMessage(text);
 
-    // #12: done and request were gated independently, so both could
-    // legitimately survive at once (e.g. wrapup: done:true alongside
-    // request:"situationsplan") - an incoherent combined UI state, not a
-    // destructive one, but not intentional either. done wins.
-    const { done, request } = resolveDoneAndRequest(rawDone, rawRequest);
+        // #3: never let an ungrounded kontrollansvarig determination
+        // through, and guarantee the "this is only information, never a
+        // substitute" disclaimer actually reaches the user when the
+        // answer is "Ja" - both previously depended entirely on the
+        // model following the prompt.
+        const disclosed = enforceKontrollansvarigDisclosure({
+          phase,
+          hasGroundingContext: Boolean(kontrollansvarigContext),
+          text: parsed.text,
+          answers: parsed.answers,
+        });
 
-    // The "text before the JSON block" formatting instruction is
-    // occasionally violated (empty or JSON-first replies seen live) -
-    // most turns that's barely noticeable, but on the turn done becomes
-    // true it's the single most visible moment in the flow. Never show
-    // nothing there.
-    const message = ensureDoneMessage(finalText, done);
+        // #7: a room list that doesn't sum to ~100% renders a visibly
+        // broken floor plan with nothing flagging why - reject it and
+        // let the (still-active) rooms phase naturally re-prompt, rather
+        // than persisting numbers the model itself was told to
+        // sanity-check.
+        let finalText = disclosed.text;
+        let finalAnswers = disclosed.answers;
+        if (finalAnswers.rooms) {
+          const roomCheck = validateRoomPercentages(finalAnswers.rooms);
+          if (!roomCheck.valid) {
+            finalText += `\n\nOBS: rumsindelningen du gav summerar till ca ${Math.round(roomCheck.sum)}% istället för ca 100% - kan du dubbelkolla procentandelarna?`;
+            finalAnswers = { ...finalAnswers, rooms: undefined };
+          }
+        }
 
-    return Response.json({
-      message,
-      answers: mergedAnswers,
-      request,
-      done,
-    });
-  } catch (error) {
-    console.error("Anthropic API error:", error);
-    return Response.json(
-      { error: "Kunde inte hämta ett svar just nu. Försök igen om en liten stund." },
-      { status: 502 },
-    );
-  }
+        const mergedAnswers = mergeAnswers(existingAnswers, finalAnswers);
+
+        const { error: upsertError } = await supabase
+          .from("project_answers")
+          .upsert({ project_id: projectId, answers: mergedAnswers }, { onConflict: "project_id" });
+        if (upsertError) {
+          console.error("Kunde inte spara insamlade svar:", upsertError);
+        }
+
+        // #13: no reliable deterministic check exists for "1-2 frågor,
+        // kort tonläge" or non-Swedish output (both would need either a
+        // second model call or a heuristic with too high a
+        // false-positive rate to trust) - length is the one honestly
+        // checkable piece, logged only, never used to mutate the
+        // response (truncating risks cutting off legally-relevant text
+        // mid-sentence).
+        if (isUnusuallyLong(finalText)) {
+          console.warn(`Interview response unusually long (${finalText.length} chars) for project ${projectId}`);
+        }
+
+        const latestUserMessage =
+          [...(messages as ChatMessage[])].reverse().find((m) => m.role === "user")?.content ?? "";
+
+        // #9: cross-check the model's own skipAheadRequested claim
+        // against the user's actual latest message in both directions -
+        // see resolveSkipAheadRequested() for what each direction guards
+        // against.
+        const skipAheadRequested = resolveSkipAheadRequested(parsed.skipAheadRequested, latestUserMessage);
+
+        // The model self-reports "done" in its JSON block, but it
+        // doesn't reliably wait for the wrapup phase to say so (seen
+        // live: it declared done right after the rooms phase, before any
+        // facade photo existed). determinePhase() is the same
+        // deterministic source of truth already used to build the
+        // prompt, so use it as a hard gate instead of trusting the
+        // model's own claim.
+        //
+        // #4: phase alone wasn't enough either - requiring wrapup on
+        // BOTH sides of the turn (wrapupRoundTripComplete) guarantees
+        // the model's wrapup questions were actually shown to the user
+        // at least once before done can fire, closing the "declares done
+        // on the very first wrapup turn" gap observed earlier in
+        // testing.
+        //
+        // The one deliberate exception: an explicit skip-ahead request
+        // (e.g. "jag vill ha ritningar nu") should surface the "Generera
+        // ritningar" step immediately once the hard minimum for it
+        // exists, without waiting for the rest of the linear phase
+        // sequence (photos, rooms, wrapup) - checked against
+        // mergedAnswers so it also works when the user supplies the
+        // missing figure in the very same message as the request.
+        const phaseAfterMerge = determinePhase(mergedAnswers, uploadedPhotos);
+        const rawDone =
+          (parsed.done && wrapupRoundTripComplete(phase, phaseAfterMerge)) ||
+          (skipAheadRequested && checkDrawingReadiness(mergedAnswers).ready);
+
+        // Same self-report problem as "done": the model can set e.g.
+        // request:"photo:norr" while it was actually instructed to focus
+        // on an earlier phase (seen live during the detaljplan phase,
+        // with reply text that never asked for a photo). Gate against
+        // the phase it was told to focus on this turn, not what it
+        // claims.
+        //
+        // #11: gateRequest only checks the request *value* against the
+        // phase - textMatchesRequest additionally checks that the reply
+        // text itself is actually about that request, closing the exact
+        // gap that originally produced the photo-request bug (a request
+        // value that passed its phase check but whose text never
+        // mentioned a photo).
+        const gatedRequest = gateRequest(phase, parsed.request, uploadedPhotos);
+        const rawRequest = textMatchesRequest(finalText, gatedRequest) ? gatedRequest : null;
+
+        // #12: done and request were gated independently, so both could
+        // legitimately survive at once (e.g. wrapup: done:true alongside
+        // request:"situationsplan") - an incoherent combined UI state,
+        // not a destructive one, but not intentional either. done wins.
+        const { done, request } = resolveDoneAndRequest(rawDone, rawRequest);
+
+        // The "text before the JSON block" formatting instruction is
+        // occasionally violated (empty or JSON-first replies seen live)
+        // - most turns that's barely noticeable, but on the turn done
+        // becomes true it's the single most visible moment in the flow.
+        // Never show nothing there. The client only sees this as the
+        // `final` event's message - if it differs from what was
+        // streamed (only happens here, or via the kontrollansvarig/room
+        // appends above), the client replaces the streamed text with
+        // this authoritative value, never the reverse.
+        const message = ensureDoneMessage(finalText, done);
+
+        send({ type: "final", message, answers: mergedAnswers, request, done });
+      } catch (error) {
+        console.error("Anthropic API error:", error);
+        send({ type: "error", error: "Kunde inte hämta ett svar just nu. Försök igen om en liten stund." });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(bodyStream, {
+    headers: { "Content-Type": "application/x-ndjson; charset=utf-8" },
+  });
 }
