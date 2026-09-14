@@ -32,8 +32,15 @@ export default function LoggaInPage() {
           </h1>
 
           <div className="mt-10">
-            <AuthForm />
+            <AuthForm mode="login" />
           </div>
+
+          <p className="mt-6 text-center text-sm text-foreground/70">
+            Har du inget konto?{" "}
+            <Link href="/konto" className="font-medium text-accent hover:underline">
+              Skapa konto
+            </Link>
+          </p>
         </div>
       </section>
 

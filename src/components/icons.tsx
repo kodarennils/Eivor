@@ -57,6 +57,78 @@ export function ArrowUpIcon({ className }: IconProps) {
   );
 }
 
+export function BuildingIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M6 22V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v18M6 22h14M14 22V13h5a1 1 0 0 1 1 1v8M9 7h.01M9 11h.01M9 15h.01"
+      />
+    </svg>
+  );
+}
+
+export function CheckIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={className}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+export function RulerIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M21.3 15.3 15.3 21.3a1 1 0 0 1-1.42 0L2.7 10.12a1 1 0 0 1 0-1.42L8.7 2.7a1 1 0 0 1 1.42 0L21.3 13.88a1 1 0 0 1 0 1.42Z"
+      />
+      <path strokeLinecap="round" strokeLinejoin="round" d="m14.5 11.5 2-2M11 8l2-2M7.5 4.5l2-2M18 15l2-2" />
+    </svg>
+  );
+}
+
+export function FileTextIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M14 2v6h6M8 13h8M8 17h8M8 9h1" />
+    </svg>
+  );
+}
+
+export function PaperclipIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="m21.44 11.05-9.19 9.19a5.5 5.5 0 0 1-7.78-7.78l9.19-9.19a3.5 3.5 0 0 1 4.95 4.95l-9.19 9.19a1.5 1.5 0 0 1-2.13-2.12l8.49-8.49"
+      />
+    </svg>
+  );
+}
+
+export function UploadIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m0-12 4 4m-4-4-4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+    </svg>
+  );
+}
+
+export function PhotoIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <circle cx="9" cy="9" r="2" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="m21 15-5-5L5 21" />
+    </svg>
+  );
+}
+
 // Google's brand mark uses fixed brand colors, not currentColor.
 export function GoogleIcon({ className }: IconProps) {
   return (
@@ -76,6 +148,35 @@ export function GoogleIcon({ className }: IconProps) {
       <path
         fill="#EA4335"
         d="M12 4.77c1.77 0 3.35.61 4.6 1.8l3.44-3.44C17.95 1.19 15.23 0 12 0 7.29 0 3.24 2.7 1.26 6.62l4.01 3.1C6.22 6.88 8.87 4.77 12 4.77Z"
+      />
+    </svg>
+  );
+}
+
+export function PlusIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+export function SearchIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
+      <circle cx="11" cy="11" r="7" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.3-4.3" />
+    </svg>
+  );
+}
+
+export function LogOutIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"
       />
     </svg>
   );

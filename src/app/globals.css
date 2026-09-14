@@ -1,12 +1,12 @@
 @import "tailwindcss";
 
 :root {
-  --background: oklch(0.962 0.014 95); /* warm cream */
+  --background: #fafafa; /* primary page background */
   --foreground: oklch(0.32 0.19 272); /* deep permit blue */
   --accent: oklch(0.42 0.24 272); /* vivid blue */
   --accent-foreground: oklch(0.97 0.01 95);
   --accent-soft: oklch(0.93 0.018 95);
-  --muted: oklch(0.93 0.018 95);
+  --muted: #f0f0f0; /* secondary surfaces: panels, cards, chat bubbles */
   --border: oklch(0.88 0.02 95);
 }
 

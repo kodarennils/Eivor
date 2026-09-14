@@ -1,7 +1,6 @@
 import Link from "next/link";
 import Image from "next/image";
 import { TopHero } from "@/components/TopHero";
-import { HeroChat } from "@/components/HeroChat";
 import { DescribeIcon, AssessmentIcon, FormIcon, SubmitIcon } from "@/components/icons";
 
 const NAV_LINKS = [{ href: "#hur-det-fungerar", label: "Så funkar det" }];
@@ -99,25 +98,27 @@ function Wordmark({ className }: { className?: string }) {
 export default function Home() {
   return (
     <>
-      <header className="border-b border-border">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
-          <Link href="/" aria-label="Eivor, till startsidan">
-            <Wordmark />
-          </Link>
-          <nav className="hidden gap-8 text-sm font-medium text-foreground/70 md:flex">
-            {NAV_LINKS.map((link) => (
-              <a key={link.label} href={link.href} className="hover:text-foreground">
-                {link.label}
+      <header>
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
+          <div className="flex items-center gap-10">
+            <Link href="/" aria-label="Eivor, till startsidan">
+              <Wordmark />
+            </Link>
+            <nav className="hidden gap-8 text-[15px] font-semibold text-foreground/80 md:flex">
+              {NAV_LINKS.map((link) => (
+                <a key={link.label} href={link.href} className="hover:text-foreground">
+                  {link.label}
+                </a>
+              ))}
+              <a href="#" className="hover:text-foreground">
+                Priser
               </a>
-            ))}
-            <a href="#" className="hover:text-foreground">
-              Priser
-            </a>
-            <a href="#" className="hover:text-foreground">
-              Om oss
-            </a>
-          </nav>
-          <div className="flex items-center gap-4">
+              <a href="#" className="hover:text-foreground">
+                Om oss
+              </a>
+            </nav>
+          </div>
+          <div className="flex items-center gap-5">
             <Link
               href="/konto/logga-in"
               className="hidden text-sm font-medium text-foreground/70 hover:text-foreground sm:inline"
@@ -126,7 +127,7 @@ export default function Home() {
             </Link>
             <Link
               href="/konto"
-              className="bg-accent px-5 py-2.5 text-sm font-medium text-accent-foreground transition-colors hover:bg-foreground"
+              className="rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-accent-foreground transition-colors hover:bg-foreground"
             >
               Kom igång
             </Link>
@@ -136,10 +137,6 @@ export default function Home() {
 
       <main>
         <TopHero />
-
-        <div className="border-t border-border">
-          <HeroChat />
-        </div>
 
         <section className="mx-auto max-w-6xl px-6 pt-8 pb-20">
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -226,16 +223,6 @@ export default function Home() {
                 </div>
               ))}
             </div>
-          </div>
-        </section>
-
-        <section className="mx-auto max-w-3xl px-6 py-16">
-          <div className="border border-border p-6">
-            <p className="text-sm text-foreground/70">
-              Eivors bedömning är preliminär och vägledande. Det slutgiltiga
-              beslutet om bygglov fattas alltid av din kommuns
-              bygglovsenhet.
-            </p>
           </div>
         </section>
       </main>

@@ -1,7 +1,15 @@
+import {
+  BuildingIcon,
+  RulerIcon,
+  FileTextIcon,
+  PaperclipIcon,
+  PhotoIcon,
+} from "@/components/icons";
 import { DIRECTIONS, DIRECTION_LABEL, type Direction } from "@/lib/project-fields";
 import { VERDICT_LABEL, VERDICT_STYLE, type Verdict } from "@/lib/verdict";
 
 type Assessment = { verdict?: Verdict; summary?: string } | null;
+type IconComponent = (props: { className?: string }) => React.ReactElement;
 
 export function ProjectDocument({
   answers,
@@ -19,140 +27,176 @@ export function ProjectDocument({
   const rooms = Array.isArray(answers.rooms)
     ? (answers.rooms as { type: string; percentage: string }[])
     : [];
-  const windows = (answers.windowsPerDirection ?? {}) as Partial<Record<Direction, string>>;
-  const mainEntrance = answers.mainEntranceDirection as Direction | undefined;
+  const roomsSummary = rooms.length
+    ? rooms.map((room) => `${room.type} ${room.percentage}%`).join(", ")
+    : "";
+
+  const titleLine1 = (answers.projectType as string) || "Ditt ärende";
+  const titleLine2 = answers.propertyDesignation as string | undefined;
+
+  const hasAttachments =
+    DIRECTIONS.some((d) => photos[d]) || situationsplanUploaded || detaljplanUploaded;
 
   return (
-    <div className="flex flex-col gap-8">
-      <div>
-        <h1 className="text-lg font-semibold">Ärendedokument</h1>
-        <p className="mt-1 text-sm text-foreground/50">
-          Uppdateras automatiskt utifrån vad som sägs i chatten.
+    <div className="mx-auto max-w-3xl">
+      <div className="border-l-2 border-accent pl-5">
+        <p className="text-xs font-medium tracking-wide text-foreground/50 uppercase">
+          Bygglovsärende
         </p>
+        <h2 className="mt-2 text-3xl font-medium sm:text-4xl">
+          {titleLine1}
+          {titleLine2 && (
+            <>
+              <br />
+              {titleLine2}
+            </>
+          )}
+        </h2>
       </div>
 
-      <section className="flex flex-col gap-2">
-        <SectionHeading>Om projektet</SectionHeading>
-        <div className="divide-y divide-border rounded-lg border border-border px-4">
-          <Field label="Typ av åtgärd" value={answers.projectType as string} />
-          <Field label="Beskrivning" value={answers.description as string} />
-          <Field label="Fastighetsbeteckning" value={answers.propertyDesignation as string} />
-          <Field label="Inom detaljplanerat område" value={answers.withinDetailedPlan as string} />
+      <DocumentSection title="Om projektet" icon={BuildingIcon}>
+        <Field
+          label="Typ av åtgärd"
+          value={answers.projectType as string}
+          placeholder="Inväntar beskrivning i chatten"
+        />
+        <Field
+          label="Rumsindelning"
+          value={roomsSummary}
+          placeholder="Inväntar beskrivning i chatten"
+        />
+        <Field
+          label="Detaljplan"
+          value={answers.withinDetailedPlan as string}
+          placeholder="Inväntar svar eller uppladdning"
+        />
+      </DocumentSection>
+
+      <DocumentSection title="Mått" icon={RulerIcon}>
+        <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-3">
+          <Metric label="Byggnadsarea" value={withUnit(answers.areaSqm, "m²")} />
+          <Metric label="Höjd till nock" value={withUnit(answers.heightMeters, "m")} />
+          <Metric label="Till tomtgräns" value={withUnit(answers.distanceToBoundaryMeters, "m")} />
         </div>
+      </DocumentSection>
 
-        {rooms.length > 0 && (
-          <div className="mt-2 rounded-lg border border-border px-4 py-3">
-            <p className="pb-1 text-xs font-medium text-foreground/50">Rumsindelning</p>
-            <ul className="flex flex-col gap-1 text-sm">
-              {rooms.map((room, i) => (
-                <li key={i} className="flex justify-between">
-                  <span>{room.type}</span>
-                  <span className="text-foreground/70">{room.percentage}%</span>
-                </li>
-              ))}
-            </ul>
-            {(mainEntrance || Object.keys(windows).length > 0) && (
-              <div className="mt-2 flex flex-col gap-1 border-t border-border pt-2 text-xs text-foreground/70">
-                {mainEntrance && <p>Huvudentré: {DIRECTION_LABEL[mainEntrance]}</p>}
-                {Object.keys(windows).length > 0 && (
-                  <p>
-                    Fönster:{" "}
-                    {DIRECTIONS.filter((d) => windows[d])
-                      .map((d) => `${DIRECTION_LABEL[d]} ${windows[d]}`)
-                      .join(", ")}
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </section>
-
-      <section className="flex flex-col gap-2">
-        <SectionHeading>Mått</SectionHeading>
-        <div className="divide-y divide-border rounded-lg border border-border px-4">
-          <Field label="Bredd" value={withUnit(answers.widthMeters, "m")} />
-          <Field label="Djup" value={withUnit(answers.depthMeters, "m")} />
-          <Field label="Yta" value={withUnit(answers.areaSqm, "kvm")} />
-          <Field label="Höjd till nock" value={withUnit(answers.heightMeters, "m")} />
-          <Field
-            label="Avstånd till tomtgräns"
-            value={withUnit(answers.distanceToBoundaryMeters, "m")}
-          />
-        </div>
-      </section>
-
-      <section className="flex flex-col gap-2">
-        <SectionHeading>Bilagor</SectionHeading>
-        <div className="grid grid-cols-2 gap-3">
-          {DIRECTIONS.map((direction) => (
-            <div key={direction} className="flex flex-col gap-1">
-              <span className="text-xs text-foreground/50">
-                Fasad {DIRECTION_LABEL[direction].toLowerCase()}
+      <DocumentSection title="Bedömning" icon={FileTextIcon}>
+        <div className="border-l-2 border-accent py-1 pl-5">
+          {assessment?.verdict ? (
+            <>
+              <span
+                className={`inline-flex rounded-sm px-2.5 py-1 text-xs font-semibold ${VERDICT_STYLE[assessment.verdict]}`}
+              >
+                {VERDICT_LABEL[assessment.verdict]}
               </span>
-              <div className="flex aspect-video items-center justify-center overflow-hidden rounded-lg border border-border bg-muted">
-                {photos[direction] ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={photos[direction]}
-                    alt={`Fasad mot ${DIRECTION_LABEL[direction].toLowerCase()}`}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <span className="text-xs text-foreground/30">Saknas</span>
-                )}
-              </div>
-            </div>
-          ))}
+              {assessment.summary && (
+                <p className="mt-4 max-w-2xl text-sm leading-6">{assessment.summary}</p>
+              )}
+              <p className="mt-3 text-xs text-foreground/50">
+                Preliminär bedömning · uppdateras när ny information bekräftas
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-foreground/50">
+              Inväntar tillräckligt underlag för en bedömning.
+            </p>
+          )}
         </div>
-        <div className="mt-2 flex flex-col gap-1 rounded-lg border border-border px-4 py-2 text-sm">
-          <div className="flex items-center justify-between">
-            <span className="text-foreground/50">Situationsplan</span>
-            <span className={situationsplanUploaded ? "font-medium" : "text-foreground/30"}>
-              {situationsplanUploaded ? "Uppladdad" : "Saknas"}
-            </span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-foreground/50">Detaljplan</span>
-            <span className={detaljplanUploaded ? "font-medium" : "text-foreground/30"}>
-              {detaljplanUploaded ? "Uppladdad" : "Saknas"}
-            </span>
-          </div>
-        </div>
-      </section>
+      </DocumentSection>
 
-      <section className="flex flex-col gap-2">
-        <SectionHeading>Bedömning</SectionHeading>
-        {assessment?.verdict ? (
-          <div className={`rounded-lg border px-4 py-3 text-sm ${VERDICT_STYLE[assessment.verdict]}`}>
-            <p className="font-medium">{VERDICT_LABEL[assessment.verdict]}</p>
-            {assessment.summary && <p className="mt-1 opacity-80">{assessment.summary}</p>}
+      <DocumentSection title="Bilagor" icon={PaperclipIcon}>
+        {hasAttachments ? (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {DIRECTIONS.filter((d) => photos[d]).map((direction) => (
+              <AttachmentCard
+                key={direction}
+                label={`Fasad ${DIRECTION_LABEL[direction].toLowerCase()}`}
+                imageUrl={photos[direction]}
+              />
+            ))}
+            {situationsplanUploaded && (
+              <AttachmentCard label="Situationsplan" icon={FileTextIcon} />
+            )}
+            {detaljplanUploaded && <AttachmentCard label="Detaljplan" icon={FileTextIcon} />}
           </div>
         ) : (
-          <p className="rounded-lg border border-border px-4 py-3 text-sm text-foreground/30">
-            Ingen bedömning ännu.
-          </p>
+          <div className="flex items-center gap-3 rounded-xl border border-dashed border-border px-4 py-5 text-sm text-foreground/50">
+            <PhotoIcon className="size-5" /> Inga bilagor ännu
+          </div>
         )}
-      </section>
+      </DocumentSection>
     </div>
   );
 }
 
-function SectionHeading({ children }: { children: React.ReactNode }) {
+function DocumentSection({
+  title,
+  icon: Icon,
+  children,
+}: {
+  title: string;
+  icon: IconComponent;
+  children: React.ReactNode;
+}) {
   return (
-    <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground/50">
+    <section className="mt-12 border-t border-border pt-7">
+      <h3 className="mb-6 flex items-center gap-2 text-lg font-semibold">
+        <Icon className="size-4 text-accent" />
+        {title}
+      </h3>
       {children}
-    </h2>
+    </section>
   );
 }
 
-function Field({ label, value }: { label: string; value?: string }) {
+function Field({
+  label,
+  value,
+  placeholder,
+}: {
+  label: string;
+  value?: string;
+  placeholder: string;
+}) {
   return (
-    <div className="flex items-baseline justify-between gap-4 py-2 text-sm">
+    <div className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.5fr)] gap-5 border-b border-border py-3 text-sm last:border-0">
       <span className="text-foreground/50">{label}</span>
-      <span className={value ? "font-medium text-foreground" : "text-foreground/30"}>
-        {value || "—"}
+      <span className={value ? "font-medium" : "font-normal text-foreground/40"}>
+        {value || placeholder}
       </span>
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value?: string }) {
+  return (
+    <div className="bg-background p-4">
+      <p className="text-xs text-foreground/50">{label}</p>
+      <p className="mt-2 text-xl font-medium">{value || "—"}</p>
+    </div>
+  );
+}
+
+function AttachmentCard({
+  label,
+  imageUrl,
+  icon: Icon,
+}: {
+  label: string;
+  imageUrl?: string;
+  icon?: IconComponent;
+}) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-background">
+      {imageUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={imageUrl} alt={label} className="aspect-[4/3] w-full object-cover" />
+      ) : (
+        <div className="grid aspect-[4/3] place-items-center bg-muted">
+          {Icon && <Icon className="size-8 text-accent" />}
+        </div>
+      )}
+      <p className="truncate border-t border-border px-2.5 py-2 text-xs">{label}</p>
     </div>
   );
 }

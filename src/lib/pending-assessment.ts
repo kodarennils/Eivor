@@ -12,8 +12,9 @@ export function savePendingAssessment(data: PendingAssessment) {
   try {
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch {
-    // sessionStorage unavailable (e.g. private browsing) - the form on
-    // /projekt still works, it just starts from a blank description.
+    // sessionStorage unavailable (e.g. private browsing) - the dashboard
+    // still works, it just creates a blank first case instead of one
+    // pre-filled from this description.
   }
 }
 

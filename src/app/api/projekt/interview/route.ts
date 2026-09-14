@@ -58,7 +58,15 @@ känt eller redan besvarats i konversationen:
 2. Mått: bredd, djup, ungefärlig yta, höjd till nock (allt i meter).
 3. Avstånd till närmaste tomtgräns (meter).
 4. Om fastigheten ligger inom detaljplanerat område - ska motsvara exakt
-   ett av: ${YES_NO_UNKNOWN_OPTIONS.join(", ")}.
+   ett av: ${YES_NO_UNKNOWN_OPTIONS.join(", ")}. Fråga med en kort mening
+   (t.ex. "Omfattas fastigheten av en detaljplan? Du kan också ladda upp
+   planen här.") och sätt "request" till "detaljplan-status" - det visar
+   Ja/Nej/Vet inte-knappar plus en uppladdningsruta för användaren. Om
+   frågan redan är besvarad eller en detaljplan-fil redan är uppladdad
+   enligt listan ovan, hoppa över och sätt inte "request" till detta igen.
+   Svaret kommer antingen som ett vanligt meddelande ("Ja", "Nej", "Jag
+   vet inte") eller som en automatisk bekräftelse att en fil laddats upp
+   (vilket innebär att svaret är "Ja") - tacka kort och gå vidare.
 5. Fastighetsbeteckning (frivilligt - fråga högst en gång, tjata inte om
    de inte vet).
 6. OM typen av åtgärd är en tillbyggnad, nybyggnad eller ett attefallshus
@@ -85,19 +93,14 @@ känt eller redan besvarats i konversationen:
    sätt "request" till "situationsplan". Om användaren säger att de inte
    har någon karta (eller redan sagt det tidigare i konversationen), gå
    vidare utan att fråga igen.
-9. Detaljplan (frivilligt): om detaljplan saknas enligt listan ovan, fråga
-   naturligt om användaren har detaljplanen för fastigheten att ladda upp
-   (t.ex. "Har du en detaljplan för fastigheten? Du kan ladda upp den
-   här, så väger jag in lokala bestämmelser i bedömningen."). Om ja, sätt
-   "request" till "detaljplan". Om användaren inte har den, gå vidare utan
-   att fråga igen.
 
 Regler:
 - Ställ en, max två, frågor per svar. Kort och vardagligt tonläge.
 - Anta inga mått eller avstånd själv - fråga, men acceptera ungefärliga
   svar ("typ 6 meter", "kanske 8 gånger 10").
-- Sätt "request" till null i alla lägen utom precis när du bett om ett
-  specifikt foto, situationsplanen eller detaljplanen i just detta svar.
+- Sätt "request" till null i alla lägen utom precis när du bett om
+  detaljplanestatus, ett specifikt foto eller situationsplanen i just
+  detta svar.
 - Om det är första meddelandet i konversationen (inget tidigare
   användarsvar än): hälsa kort och ställ din första fråga direkt, utifrån
   vad som redan är känt.
@@ -120,7 +123,7 @@ strängar eller tomma listor):
     "windowsPerDirection": {"norr": "...", "öster": "...", "söder": "...", "väster": "..."},
     "mainEntranceDirection": "..."
   },
-  "request": "photo:norr" | "photo:öster" | "photo:söder" | "photo:väster" | "situationsplan" | "detaljplan" | null,
+  "request": "photo:norr" | "photo:öster" | "photo:söder" | "photo:väster" | "situationsplan" | "detaljplan-status" | null,
   "done": true eller false
 }
 \`\`\`

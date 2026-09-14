@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowUpIcon } from "@/components/icons";
+import { ArrowUpIcon, BuildingIcon, PaperclipIcon } from "@/components/icons";
 import { ImageUploadSlot } from "@/components/ImageUploadSlot";
 import { SituationsplanUpload } from "@/components/SituationsplanUpload";
 import { DetaljplanUpload } from "@/components/DetaljplanUpload";
@@ -18,18 +18,37 @@ type Drawings = {
   situationsplan: string | null;
 };
 
+const DETALJPLAN_ANSWER_TEXT: Record<"Ja" | "Nej" | "Vet inte", string> = {
+  Ja: "Ja, fastigheten omfattas av detaljplan.",
+  Nej: "Nej, den ligger utanför detaljplan.",
+  "Vet inte": "Jag vet inte.",
+};
+
+// The "6" core facts the guide always needs, shown as a progress count in
+// the chat sub-header - rooms/fönster/foton are conditional on ärendetyp
+// so they're intentionally not counted here.
+const PROGRESS_FIELDS = [
+  "projectType",
+  "widthMeters",
+  "areaSqm",
+  "heightMeters",
+  "distanceToBoundaryMeters",
+  "withinDetailedPlan",
+] as const;
+
 type TimelineItem =
   | { kind: "message"; role: "user" | "assistant"; content: string }
   | { kind: "confirmation"; text: string }
   | { kind: "photo"; id: string; direction: Direction; uploaded: boolean }
   | { kind: "situationsplan"; id: string; saved: boolean; skipped: boolean }
-  | { kind: "detaljplan"; id: string; uploaded: boolean; skipped: boolean }
+  | { kind: "detaljplan-status"; id: string; resolvedLabel: string | null }
   | { kind: "generate-cta" }
   | { kind: "drawings"; drawings: Drawings };
 
 export function ProjectInterviewChat({
   userId,
   projectId,
+  answers = {},
   onAnswersChange,
   onPhotoUploaded: onPhotoUploadedProp,
   onSituationsplanSaved: onSituationsplanSavedProp,
@@ -37,6 +56,7 @@ export function ProjectInterviewChat({
 }: {
   userId: string;
   projectId: string;
+  answers: Record<string, unknown>;
   onAnswersChange?: (answers: Record<string, unknown>) => void;
   onPhotoUploaded?: (direction: Direction) => void;
   onSituationsplanSaved?: () => void;
@@ -52,6 +72,14 @@ export function ProjectInterviewChat({
   const startedRef = useRef(false);
   const apiMessagesRef = useRef<ApiMessage[]>([]);
   const answersRef = useRef<Record<string, unknown>>({});
+
+  const completion = PROGRESS_FIELDS.filter((field) => answers[field]).length;
+  // Only the most recent message keeps full color - everything earlier
+  // reads as gray "history" so the active exchange stands out.
+  const lastMessageIndex = timeline.reduce(
+    (last, item, i) => (item.kind === "message" ? i : last),
+    -1,
+  );
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -115,8 +143,8 @@ export function ProjectInterviewChat({
     const id = `${request}-${next.length}`;
     if (request === "situationsplan") {
       next.push({ kind: "situationsplan", id, saved: false, skipped: false });
-    } else if (request === "detaljplan") {
-      next.push({ kind: "detaljplan", id, uploaded: false, skipped: false });
+    } else if (request === "detaljplan-status") {
+      next.push({ kind: "detaljplan-status", id, resolvedLabel: null });
     } else {
       const direction = request.slice("photo:".length) as Direction;
       next.push({ kind: "photo", id, direction, uploaded: false });
@@ -151,28 +179,36 @@ export function ProjectInterviewChat({
     ]);
   }
 
-  function handleDetaljplanUploaded(id: string) {
+  function handleDetaljplanStatusAnswer(id: string, answer: "Ja" | "Nej" | "Vet inte") {
     setTimeline((prev) =>
       prev.map((item) =>
-        item.kind === "detaljplan" && item.id === id ? { ...item, uploaded: true } : item,
+        item.kind === "detaljplan-status" && item.id === id
+          ? { ...item, resolvedLabel: answer }
+          : item,
+      ),
+    );
+    const text = DETALJPLAN_ANSWER_TEXT[answer];
+    setTimeline((prev) => [...prev, { kind: "message", role: "user", content: text }]);
+    send([...apiMessagesRef.current, { role: "user", content: text }]);
+  }
+
+  function handleDetaljplanUpload(id: string) {
+    setTimeline((prev) =>
+      prev.map((item) =>
+        item.kind === "detaljplan-status" && item.id === id
+          ? { ...item, resolvedLabel: "Ja" }
+          : item,
       ),
     );
     onDetaljplanUploadedProp?.();
     send([
       ...apiMessagesRef.current,
-      { role: "user", content: "[Jag har nu laddat upp detaljplanen.]" },
+      {
+        role: "user",
+        content:
+          "[Jag har nu laddat upp detaljplanen, vilket bekräftar att fastigheten omfattas av detaljplan.]",
+      },
     ]);
-  }
-
-  function handleSkipDetaljplan(id: string) {
-    setTimeline((prev) =>
-      prev.map((item) =>
-        item.kind === "detaljplan" && item.id === id ? { ...item, skipped: true } : item,
-      ),
-    );
-    const text = "Jag har ingen detaljplan att ladda upp.";
-    setTimeline((prev) => [...prev, { kind: "message", role: "user", content: text }]);
-    send([...apiMessagesRef.current, { role: "user", content: text }]);
   }
 
   function handleSituationsplanSaved(id: string) {
@@ -235,57 +271,78 @@ export function ProjectInterviewChat({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3">
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto rounded-lg border border-border bg-muted/40 p-4">
-        {timeline.map((item, i) => (
-          <TimelineEntry
-            key={i}
-            item={item}
-            userId={userId}
-            projectId={projectId}
-            isGeneratingDrawings={isGeneratingDrawings}
-            drawingError={drawingError}
-            onPhotoUploaded={handlePhotoUploaded}
-            onSituationsplanSaved={handleSituationsplanSaved}
-            onSkipSituationsplan={handleSkipSituationsplan}
-            onDetaljplanUploaded={handleDetaljplanUploaded}
-            onSkipDetaljplan={handleSkipDetaljplan}
-            onGenerateDrawings={handleGenerateDrawings}
-          />
-        ))}
-
-        {isLoading && (
-          <div className="flex justify-start">
-            <div className="max-w-[85%] rounded-2xl bg-background px-4 py-2.5 text-sm text-foreground/50">
-              Eivor tänker…
-            </div>
-          </div>
-        )}
-
-        {error && (
-          <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
-            {error}
-          </p>
-        )}
-
-        <div ref={scrollRef} />
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex shrink-0 items-center justify-between border-b border-border px-1 pb-3 text-sm">
+        <span className="font-medium">Bygglovsguiden</span>
+        <span className="text-xs text-foreground/50">
+          {completion} av {PROGRESS_FIELDS.length} uppgifter
+        </span>
       </div>
 
-      <form onSubmit={handleSubmit} className="flex shrink-0 gap-2">
+      <div className="min-h-0 flex-1 overflow-y-auto py-4">
+        <div className="flex flex-col gap-5">
+          {timeline.map((item, i) => (
+            <TimelineEntry
+              key={i}
+              item={item}
+              isLatestMessage={i === lastMessageIndex}
+              userId={userId}
+              projectId={projectId}
+              isGeneratingDrawings={isGeneratingDrawings}
+              drawingError={drawingError}
+              onPhotoUploaded={handlePhotoUploaded}
+              onSituationsplanSaved={handleSituationsplanSaved}
+              onSkipSituationsplan={handleSkipSituationsplan}
+              onDetaljplanStatusAnswer={handleDetaljplanStatusAnswer}
+              onDetaljplanUpload={handleDetaljplanUpload}
+              onGenerateDrawings={handleGenerateDrawings}
+            />
+          ))}
+
+          {isLoading && (
+            <div className="flex items-center gap-2 text-xs font-semibold text-accent">
+              <span className="grid size-5 place-items-center rounded-sm bg-accent text-accent-foreground">
+                <BuildingIcon className="size-3" />
+              </span>
+              <span className="font-normal text-foreground/50">Eivor tänker…</span>
+            </div>
+          )}
+
+          {error && (
+            <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+              {error}
+            </p>
+          )}
+
+          <div ref={scrollRef} />
+        </div>
+      </div>
+
+      <form
+        onSubmit={handleSubmit}
+        className="mt-2 flex shrink-0 items-center gap-1 rounded-full border border-gray-300 bg-background pr-2 pl-2 focus-within:border-gray-400"
+      >
+        <button
+          type="button"
+          aria-label="Bifoga fil"
+          className="flex size-8 shrink-0 items-center justify-center rounded-full text-foreground/40 hover:text-foreground/70"
+        >
+          <PaperclipIcon className="h-4 w-4" />
+        </button>
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Skriv ditt svar här…"
+          placeholder="Skriv ett meddelande…"
           disabled={isLoading}
-          className="flex-1 rounded-lg border border-border bg-background px-4 py-3 text-sm outline-none focus:border-accent disabled:opacity-50"
+          className="min-w-0 flex-1 bg-transparent px-1 py-3 text-sm outline-none disabled:opacity-50"
         />
         <button
           type="submit"
           disabled={isLoading || !input.trim()}
           aria-label="Skicka"
-          className="flex items-center justify-center rounded-lg bg-accent px-4 text-accent-foreground disabled:opacity-40"
+          className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent text-accent-foreground disabled:opacity-40"
         >
-          <ArrowUpIcon className="h-5 w-5" />
+          <ArrowUpIcon className="h-4 w-4" />
         </button>
       </form>
     </div>
@@ -294,6 +351,7 @@ export function ProjectInterviewChat({
 
 function TimelineEntry({
   item,
+  isLatestMessage,
   userId,
   projectId,
   isGeneratingDrawings,
@@ -301,11 +359,12 @@ function TimelineEntry({
   onPhotoUploaded,
   onSituationsplanSaved,
   onSkipSituationsplan,
-  onDetaljplanUploaded,
-  onSkipDetaljplan,
+  onDetaljplanStatusAnswer,
+  onDetaljplanUpload,
   onGenerateDrawings,
 }: {
   item: TimelineItem;
+  isLatestMessage: boolean;
   userId: string;
   projectId: string;
   isGeneratingDrawings: boolean;
@@ -313,37 +372,56 @@ function TimelineEntry({
   onPhotoUploaded: (id: string, direction: Direction) => void;
   onSituationsplanSaved: (id: string) => void;
   onSkipSituationsplan: (id: string) => void;
-  onDetaljplanUploaded: (id: string) => void;
-  onSkipDetaljplan: (id: string) => void;
+  onDetaljplanStatusAnswer: (id: string, answer: "Ja" | "Nej" | "Vet inte") => void;
+  onDetaljplanUpload: (id: string) => void;
   onGenerateDrawings: () => void;
 }) {
   if (item.kind === "message") {
+    if (item.role === "assistant") {
+      return (
+        <div className="max-w-[92%] text-sm leading-6">
+          <div
+            className={`mb-2 flex items-center gap-2 text-xs font-semibold ${
+              isLatestMessage ? "text-accent" : "text-gray-400"
+            }`}
+          >
+            <span
+              className={`grid size-5 place-items-center rounded-sm text-accent-foreground ${
+                isLatestMessage ? "bg-accent" : "bg-gray-300"
+              }`}
+            >
+              <BuildingIcon className="size-3" />
+            </span>
+            Eivor
+          </div>
+          <p className={`whitespace-pre-wrap ${isLatestMessage ? "" : "text-gray-500"}`}>
+            {item.content}
+          </p>
+        </div>
+      );
+    }
     return (
-      <div className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
-        <div
-          className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
-            item.role === "user"
+      <div className="flex justify-end">
+        <p
+          className={`max-w-[84%] rounded-xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
+            isLatestMessage
               ? "bg-accent text-accent-foreground"
-              : "bg-background text-foreground"
+              : "bg-gray-200 text-gray-600"
           }`}
         >
           {item.content}
-        </div>
+        </p>
       </div>
     );
   }
 
   if (item.kind === "confirmation") {
-    return (
-      <p className="pl-1 text-xs text-foreground/50 italic">
-        ✓ {item.text}
-      </p>
-    );
+    return <p className="pl-1 text-xs text-foreground/50 italic">✓ {item.text}</p>;
   }
 
   if (item.kind === "photo") {
     return (
-      <div className="max-w-[85%] rounded-2xl bg-background p-3">
+      <div className="max-w-[85%] rounded-xl bg-muted p-3">
         {item.uploaded ? (
           <p className="text-xs text-foreground/50 italic">
             ✓ Fasadfoto mot {DIRECTION_LABEL[item.direction].toLowerCase()} uppladdat
@@ -370,7 +448,7 @@ function TimelineEntry({
       return <p className="pl-1 text-xs text-foreground/50 italic">✓ Situationsplan sparad</p>;
     }
     return (
-      <div className="max-w-full rounded-2xl bg-background p-3">
+      <div className="max-w-full rounded-xl bg-muted p-3">
         <SituationsplanUpload
           projectId={projectId}
           hasExisting={false}
@@ -387,27 +465,35 @@ function TimelineEntry({
     );
   }
 
-  if (item.kind === "detaljplan") {
-    if (item.skipped) {
-      return <p className="pl-1 text-xs text-foreground/50 italic">✓ Detaljplan hoppas över</p>;
-    }
-    if (item.uploaded) {
-      return <p className="pl-1 text-xs text-foreground/50 italic">✓ Detaljplan uppladdad</p>;
+  if (item.kind === "detaljplan-status") {
+    if (item.resolvedLabel) {
+      return (
+        <p className="pl-1 text-xs text-foreground/50 italic">
+          ✓ Detaljplan: {item.resolvedLabel}
+        </p>
+      );
     }
     return (
-      <div className="max-w-full rounded-2xl bg-background p-3">
-        <DetaljplanUpload
-          projectId={projectId}
-          hasExistingUpload={false}
-          onUploaded={() => onDetaljplanUploaded(item.id)}
-        />
-        <button
-          type="button"
-          onClick={() => onSkipDetaljplan(item.id)}
-          className="mt-2 text-xs text-foreground/50 hover:text-foreground/80"
-        >
-          Jag har ingen detaljplan →
-        </button>
+      <div className="space-y-3 border-l-2 border-accent pl-4">
+        <div className="flex flex-wrap gap-2">
+          {(["Ja", "Nej", "Vet inte"] as const).map((answer) => (
+            <button
+              key={answer}
+              type="button"
+              onClick={() => onDetaljplanStatusAnswer(item.id, answer)}
+              className="rounded-xl border border-border px-3 py-1.5 text-sm hover:border-accent"
+            >
+              {answer}
+            </button>
+          ))}
+        </div>
+        <div className="rounded-xl bg-muted p-3">
+          <DetaljplanUpload
+            projectId={projectId}
+            hasExistingUpload={false}
+            onUploaded={() => onDetaljplanUpload(item.id)}
+          />
+        </div>
       </div>
     );
   }
@@ -419,12 +505,12 @@ function TimelineEntry({
           type="button"
           onClick={onGenerateDrawings}
           disabled={isGeneratingDrawings}
-          className="rounded-lg bg-accent px-5 py-2.5 text-sm font-medium text-accent-foreground disabled:opacity-40"
+          className="rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-accent-foreground disabled:opacity-40"
         >
           {isGeneratingDrawings ? "Genererar…" : "Generera ritningar"}
         </button>
         {drawingError && (
-          <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+          <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
             {drawingError}
           </p>
         )}
@@ -455,7 +541,7 @@ function TimelineEntry({
 
 function DrawingCard({ title, svg }: { title: string; svg: string }) {
   return (
-    <div className="rounded-lg border border-border bg-white p-4">
+    <div className="rounded-xl border border-border bg-white p-4">
       <p className="mb-2 text-xs font-medium uppercase tracking-wide text-foreground/50">
         {title}
       </p>

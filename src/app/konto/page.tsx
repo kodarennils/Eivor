@@ -35,8 +35,15 @@ export default function KontoPage() {
           </p>
 
           <div className="mt-10">
-            <AuthForm />
+            <AuthForm mode="signup" />
           </div>
+
+          <p className="mt-6 text-center text-sm text-foreground/70">
+            Har du redan ett konto?{" "}
+            <Link href="/konto/logga-in" className="font-medium text-accent hover:underline">
+              Logga in
+            </Link>
+          </p>
         </div>
       </section>
 

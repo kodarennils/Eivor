@@ -35,7 +35,11 @@ const SCALAR_FIELDS = [
 // What embedded widget, if any, the chat should show next - the model
 // requests these explicitly instead of trying to describe an upload
 // control in plain text.
-export type InterviewRequest = `photo:${Direction}` | "situationsplan" | "detaljplan" | null;
+export type InterviewRequest =
+  | `photo:${Direction}`
+  | "situationsplan"
+  | "detaljplan-status"
+  | null;
 
 const PHOTO_REQUESTS = DIRECTIONS.map((d) => `photo:${d}`);
 
@@ -74,7 +78,7 @@ function parseWindows(value: unknown): Partial<Record<Direction, string>> | unde
 }
 
 function parseRequest(value: unknown): InterviewRequest {
-  if (value === "situationsplan" || value === "detaljplan") return value;
+  if (value === "situationsplan" || value === "detaljplan-status") return value;
   if (typeof value === "string" && PHOTO_REQUESTS.includes(value)) {
     return value as InterviewRequest;
   }
